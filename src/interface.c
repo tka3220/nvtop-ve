@@ -412,6 +412,7 @@ static void initialize_gpu_mem_plot(struct plot_window *plot, struct window_posi
   plot->num_data = (size_t)cols * PLOT_MAX_SAMPLES_PER_COLUMN * MAX_LINES_PER_PLOT;
   plot->data = calloc(plot->num_data, sizeof(*plot->data));
   if (!plot->data) {
+    endwin();
     perror("Cannot allocate memory: ");
     exit(EXIT_FAILURE);
   }
