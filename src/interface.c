@@ -416,7 +416,9 @@ static void initialize_gpu_mem_plot(struct plot_window *plot, struct window_posi
   // metrics changes without reinitializing the plot.
   plot->num_data = (size_t)cols * PLOT_MAX_SAMPLES_PER_COLUMN * MAX_LINES_PER_PLOT;
   plot->data = calloc(plot->num_data, sizeof(*plot->data));
-  if (!plot->data) {
+  // Sized for the most lines a plot can hold, independently of the plot style.
+  plot->braille_masks = malloc(PLOT_BRAILLE_MASKS_SIZE(rows, cols));
+  if (!plot->data || !plot->braille_masks) {
     endwin();
     perror("Cannot allocate memory: ");
     exit(EXIT_FAILURE);
@@ -595,6 +597,7 @@ static void delete_all_windows(struct nvtop_interface *dwin) {
     delwin(dwin->plots[i].win);
     delwin(dwin->plots[i].plot_window);
     free(dwin->plots[i].data);
+    free(dwin->plots[i].braille_masks);
   }
   free_setup_window(&dwin->setup_win);
   free(dwin->plots);
@@ -684,7 +687,6 @@ void clean_ncurses(struct nvtop_interface *interface) {
   free(interface->options.config_file_location);
   free(interface->devices_win);
   interface_free_ring_buffer(&interface->saved_data_ring);
-  nvtop_plot_free_resources();
   free(interface);
 }
 
@@ -2672,7 +2674,7 @@ static void draw_plots(struct list_head *devices, struct nvtop_interface *interf
 
     nvtop_line_plot(interface->plots[plot_id].plot_window, interface->plots[plot_id].num_samples,
                     interface->plots[plot_id].data, num_lines, interface->options.plot_style,
-                    interface->options.plot_left_to_right, plot_legend);
+                    interface->options.plot_left_to_right, interface->plots[plot_id].braille_masks, plot_legend);
 
     wnoutrefresh(interface->plots[plot_id].plot_window);
   }

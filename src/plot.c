@@ -69,23 +69,12 @@ static void draw_plot_legend(WINDOW *win, int rows, int cols, unsigned num_lines
   }
 }
 
-// Map a sample index onto a horizontal resolution (character columns or
-// braille dot columns), spreading the samples over the full width.
-static unsigned sample_to_column(size_t sample, size_t num_samples, unsigned columns) {
-  if (num_samples <= 1 || columns <= 1)
-    return 0;
-  double column = (double)sample * (double)(columns - 1) / (double)(num_samples - 1);
-  return (unsigned)llround(column);
-}
-
 // Legacy renderer using ncurses line-drawing characters. Kept as a fallback
 // for terminals or locales where Unicode braille patterns are unavailable.
-// Each update normally occupies num_lines consecutive columns, one per metric,
-// so the graph advances by num_lines columns per update. When full_width is
-// true the samples are spread over the whole window instead (used when a
-// braille frame could not be allocated).
+// Each update occupies num_lines consecutive columns, one per metric, so the
+// graph advances by num_lines columns per update.
 static void nvtop_line_plot_line(WINDOW *win, size_t num_samples, const double *data, unsigned num_lines,
-                                 bool full_width, bool newest_left) {
+                                 bool newest_left) {
   int rows = getmaxy(win);
   int cols = getmaxx(win);
   rows -= 1;
@@ -100,13 +89,8 @@ static void nvtop_line_plot_line(WINDOW *win, size_t num_samples, const double *
 
   for (size_t sample = 0; sample < num_samples; ++sample) {
     for (unsigned k = 0; k < num_lines; ++k) {
-      int x;
-      if (full_width) {
-        x = (int)sample_to_column(sample, num_samples, (unsigned)cols);
-      } else {
-        int base_x = newest_left ? 0 : cols - (int)(num_samples * num_lines);
-        x = base_x + (int)(sample * num_lines + k);
-      }
+      int base_x = newest_left ? 0 : cols - (int)(num_samples * num_lines);
+      int x = base_x + (int)(sample * num_lines + k);
       if (x < 0 || x >= cols)
         continue;
       unsigned lvl_now_k = data_level(rows, data[sample * num_lines + k], increment);
@@ -259,35 +243,22 @@ static unsigned braille_top_row(uint8_t mask) {
   return 3;
 }
 
-// Per-line dot masks reused across frames. The buffer only grows, so the steady
-// state does no allocation; it is cleared before each use. The interface is
-// single threaded, so one shared buffer is enough.
-static uint8_t *braille_scratch = NULL;
-static size_t braille_scratch_capacity = 0;
-
-static uint8_t *braille_scratch_masks(size_t size) {
-  if (size > braille_scratch_capacity) {
-    uint8_t *grown = realloc(braille_scratch, size);
-    if (!grown)
-      return NULL;
-    braille_scratch = grown;
-    braille_scratch_capacity = size;
-  }
-  memset(braille_scratch, 0, size);
-  return braille_scratch;
+// Map a sample index onto the braille dot columns, spreading the samples over
+// the full width.
+static unsigned sample_to_column(size_t sample, size_t num_samples, unsigned columns) {
+  if (num_samples <= 1 || columns <= 1)
+    return 0;
+  double column = (double)sample * (double)(columns - 1) / (double)(num_samples - 1);
+  return (unsigned)llround(column);
 }
 
 // Draw the plot using Unicode braille patterns. Each character cell provides a
 // 2x4 dot matrix, i.e. eight times more detail than a regular character.
-static bool nvtop_line_plot_braille(WINDOW *win, size_t num_samples, const double *data, unsigned num_lines, int rows,
-                                    int cols) {
-  if (num_samples == 0 || rows <= 0 || cols <= 0)
-    return true;
-
+// masks must hold num_lines * rows * cols bytes.
+static void nvtop_line_plot_braille(WINDOW *win, size_t num_samples, const double *data, unsigned num_lines, int rows,
+                                    int cols, uint8_t *masks) {
   size_t cell_count = (size_t)rows * (size_t)cols;
-  uint8_t *masks = braille_scratch_masks((size_t)num_lines * cell_count);
-  if (!masks)
-    return false;
+  memset(masks, 0, (size_t)num_lines * cell_count);
 
   unsigned dot_cols = (unsigned)cols * BRAILLE_CELL_COLS;
   unsigned dot_rows = (unsigned)rows * BRAILLE_CELL_ROWS;
@@ -341,8 +312,6 @@ static bool nvtop_line_plot_braille(WINDOW *win, size_t num_samples, const doubl
       }
     }
   }
-
-  return true;
 }
 
 #endif // NCURSES_WIDECHAR
@@ -371,14 +340,6 @@ bool nvtop_plot_supports_unicode_blocks(void) {
 #endif
 }
 
-void nvtop_plot_free_resources(void) {
-#if defined(NCURSES_WIDECHAR) && NCURSES_WIDECHAR
-  free(braille_scratch);
-  braille_scratch = NULL;
-  braille_scratch_capacity = 0;
-#endif
-}
-
 bool nvtop_plot_supports_middle_dot(void) {
 #if defined(NCURSES_WIDECHAR) && NCURSES_WIDECHAR
   static int supported = -1;
@@ -391,29 +352,26 @@ bool nvtop_plot_supports_middle_dot(void) {
 }
 
 void nvtop_line_plot(WINDOW *win, size_t num_samples, const double *data, unsigned num_lines,
-                     enum nvtop_plot_style style, bool newest_left,
+                     enum nvtop_plot_style style, bool newest_left, uint8_t *braille_masks,
                      char legend[MAX_LINES_PER_PLOT][PLOT_MAX_LEGEND_SIZE]) {
   if (num_samples == 0 || num_lines == 0 || num_lines > MAX_LINES_PER_PLOT)
     return;
 #if !defined(NCURSES_WIDECHAR) || !NCURSES_WIDECHAR
-  (void)style; // Only the braille renderer, which needs wide characters, uses it.
+  // Only the braille renderer, which needs wide characters, uses them.
+  (void)style;
+  (void)braille_masks;
 #endif
   int rows, cols;
   getmaxyx(win, rows, cols);
   if (rows <= 0 || cols <= 0)
     return;
 
-  bool plotted = false;
-  bool braille_layout = false;
 #if defined(NCURSES_WIDECHAR) && NCURSES_WIDECHAR
-  if (style == nvtop_plot_style_braille && nvtop_plot_supports_braille()) {
-    braille_layout = true;
-    plotted = nvtop_line_plot_braille(win, num_samples, data, num_lines, rows, cols);
-  }
+  if (style == nvtop_plot_style_braille && nvtop_plot_supports_braille())
+    nvtop_line_plot_braille(win, num_samples, data, num_lines, rows, cols, braille_masks);
+  else
 #endif
-  if (!plotted) {
-    nvtop_line_plot_line(win, num_samples, data, num_lines, braille_layout, newest_left);
-  }
+    nvtop_line_plot_line(win, num_samples, data, num_lines, newest_left);
 
   // The legend sits on the side of the oldest data.
   draw_plot_legend(win, rows, cols, num_lines, !newest_left, legend);

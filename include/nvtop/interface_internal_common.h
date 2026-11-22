@@ -30,6 +30,7 @@
 
 #include <ncurses.h>
 #include <stdbool.h>
+#include <stdint.h>
 
 #define max(a, b) ((a) > (b) ? (a) : (b))
 #define min(a, b) ((a) < (b) ? (a) : (b))
@@ -126,6 +127,7 @@ struct plot_window {
   size_t num_data;
   size_t num_samples; // Samples displayed per line (fixed by the plot width)
   double *data;
+  uint8_t *braille_masks; // Renderer scratch, PLOT_BRAILLE_MASKS_SIZE bytes for plot_window
   WINDOW *win;
   WINDOW *plot_window;
   unsigned num_devices_to_plot;
