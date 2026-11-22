@@ -36,6 +36,12 @@
 static const short plot_line_colors[MAX_LINES_PER_PLOT] = {7, 8, 9, 10};
 
 static inline int data_level(double rows, double data, double increment) {
+  if (!isfinite(data))
+    data = 0.;
+  if (data < 0.)
+    data = 0.;
+  if (data > 100.)
+    data = 100.;
   return (int)(rows - round(data / increment));
 }
 
