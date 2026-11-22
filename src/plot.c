@@ -51,7 +51,7 @@ static void draw_plot_legend(WINDOW *win, int rows, int cols, unsigned num_lines
       if (length <= (size_t)cols) {
         mvwprintw(win, plot_y_position, cols - length, "%s", legend[i]);
       } else {
-        mvwprintw(win, plot_y_position, 0, "%.*s", (int)(length - cols), legend[i]);
+        mvwprintw(win, plot_y_position, 0, "%s", legend[i] + length - cols);
       }
     }
     plot_y_position++;
