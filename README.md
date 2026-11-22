@@ -84,13 +84,24 @@ throughput as a percentage of the maximum link bandwidth).
 Charts are drawn with Unicode braille dots by default. Each character cell is a 2x4 dot
 matrix, with one data sample per column (one per update tick) shared by all metrics in the
 chart. The ``Double braille plot resolution`` option draws two samples per column for more
-detail and twice the history; it can also be enabled with ``--double-plot-resolution``. This
-mode only applies to braille. The legacy line style keeps the original layout: one column per
-metric per update, so a chart with N metrics advances N columns per update and shows a shorter
-time span. The ``Smooth braille plots`` option switches back to the legacy line-drawing style
-(also ``--legacy-plot`` or ``GraphStyle = line`` in the config). If the terminal or locale
-cannot represent braille characters, nvtop automatically falls back to the legacy renderer.
-Press ``F12`` to save the choice.
+detail and twice the history; it can also be enabled with ``--double-plot-resolution`` or
+``DoublePlotResolution = true`` in the config. This mode only applies to braille. The legacy
+line style keeps the original layout: one column per metric per update, so a chart with N
+metrics advances N columns per update and shows a shorter time span. Uncheck ``Smooth braille
+plots``, use ``--legacy-plot``, or set ``GraphStyle = line`` to select the legacy line-drawing
+style. If the terminal or locale cannot represent braille characters, nvtop automatically
+falls back to the legacy renderer. Press ``F12`` to save the choice.
+
+The device utilization meters use graphical bars by default on 256-color terminals. They use
+a dim dot track in the terminal's default foreground, a solid threshold-colored fill (green
+below 50%, yellow from 50% to 79%, red at 80% or more), and 1/8-block precision when Unicode
+block elements are available. The fill colors come from the terminal's ANSI palette, and the
+value text uses reverse video so it picks up the terminal's default background color and
+stays readable on both light and dark themes. Effective load is shown as a cyan fill from the
+start of the bar; when it equals utilization, the whole bar is cyan. Set ``MeterStyle =
+graphical|legacy``, use the ``Graphical utilization bars`` option in the ``Devices`` setup
+section, or pass ``--legacy-bars`` to switch to the original bracketed pipe meters. On
+terminals without color support, the legacy meters are used automatically.
 
 ![NVTOP Setup Window](/screenshot/Nvtop-config.png)
 
