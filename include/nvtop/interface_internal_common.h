@@ -64,12 +64,6 @@ enum interface_color {
   bar_effective_green_color,
   bar_effective_yellow_color,
   bar_effective_red_color,
-  bar_value_green_color,
-  bar_value_yellow_color,
-  bar_value_red_color,
-  bar_value_cyan_color,
-  bar_track_color,
-  bar_track_text_color,
 };
 
 struct device_window {

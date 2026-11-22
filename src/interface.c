@@ -42,6 +42,7 @@
 #include <string.h>
 #include <tgmath.h>
 #include <unistd.h>
+#include <wchar.h>
 
 // A device box is device_length() columns wide, which fits this many extra info fields
 #define EXTRA_INFO_PER_ROW 4
@@ -615,19 +616,13 @@ static void initialize_colors(const unsigned char plot_color_idx[MAX_LINES_PER_P
   // Keep the meters on the terminal's ANSI palette so they follow the user's
   // theme. The fill pairs use the track color as their background; the cells
   // are reversed when painted.
-  init_pair(bar_green_color, COLOR_GREEN, COLOR_BLACK);
-  init_pair(bar_yellow_color, COLOR_YELLOW, COLOR_BLACK);
-  init_pair(bar_red_color, COLOR_RED, COLOR_BLACK);
-  init_pair(bar_effective_fill_color, COLOR_CYAN, COLOR_BLACK);
+  init_pair(bar_green_color, COLOR_GREEN, background_color);
+  init_pair(bar_yellow_color, COLOR_YELLOW, background_color);
+  init_pair(bar_red_color, COLOR_RED, background_color);
+  init_pair(bar_effective_fill_color, COLOR_CYAN, background_color);
   init_pair(bar_effective_green_color, COLOR_CYAN, COLOR_GREEN);
   init_pair(bar_effective_yellow_color, COLOR_CYAN, COLOR_YELLOW);
   init_pair(bar_effective_red_color, COLOR_CYAN, COLOR_RED);
-  init_pair(bar_value_green_color, COLOR_BLACK, COLOR_GREEN);
-  init_pair(bar_value_yellow_color, COLOR_BLACK, COLOR_YELLOW);
-  init_pair(bar_value_red_color, COLOR_WHITE, COLOR_RED);
-  init_pair(bar_value_cyan_color, COLOR_BLACK, COLOR_CYAN);
-  init_pair(bar_track_color, COLOR_BLACK, COLOR_BLACK);
-  init_pair(bar_track_text_color, COLOR_WHITE, COLOR_BLACK);
   static const short gpu_plot_pairs[MAX_LINES_PER_PLOT] = {
       gpu_util_plot_color, gpu_mem_plot_color, gpu_plot_color_3, gpu_plot_color_4};
   for (unsigned s = 0; s < MAX_LINES_PER_PLOT; ++s)
@@ -703,14 +698,6 @@ static short percentage_meter_effective_block_color(short fill_color) {
 }
 #endif
 
-static short percentage_meter_value_fill_color(unsigned int percentage) {
-  if (percentage >= 80)
-    return bar_value_red_color;
-  if (percentage >= 50)
-    return bar_value_yellow_color;
-  return bar_value_green_color;
-}
-
 // Number of character cells the bar covers for text-background purposes. A
 // partially filled cell rounds up so a glyph is never split between the bar
 // and the track.
@@ -741,13 +728,24 @@ static struct percentage_meter_layout percentage_meter_layout(WINDOW *win, const
   return (struct percentage_meter_layout){.curx = curx, .bar_width = bar_width, .value_space = value_space};
 }
 
-// Draw the dark track when the terminal has enough colors for it.
-static bool percentage_meter_draw_track(WINDOW *win, int row, int col, int width) {
-  mvwhline(win, row, col, ' ', width);
-  if (COLORS < 256)
-    return false;
-  mvwchgat(win, row, col, width, 0, bar_track_color, NULL);
-  return true;
+// Draw the meter extent as dim centered dots in the terminal's default
+// foreground. A single dot per cell leaves the 1/8-block fill untouched.
+static void percentage_meter_draw_track(WINDOW *win, int row, int col, int width) {
+  if (width <= 0)
+    return;
+  wattron(win, A_DIM);
+#if defined(NCURSES_WIDECHAR) && NCURSES_WIDECHAR
+  if (nvtop_plot_supports_unicode_blocks() && wcwidth((wchar_t)L'·') == 1) {
+    wchar_t dot[2] = {L'·', L'\0'};
+    for (int i = 0; i < width; ++i)
+      mvwaddnwstr(win, row, col + i, dot, 1);
+  } else
+#endif
+  {
+    mvwhline(win, row, col, '.', width);
+  }
+  wattroff(win, A_DIM);
+  wstandend(win);
 }
 
 // Draw a filled bar with 1/8-cell precision when Unicode block elements are
@@ -764,8 +762,11 @@ static void percentage_meter_draw_bar(WINDOW *win, int row, int col, int bar_wid
   unsigned eighth = total_eighths % 8u;
   if (whole > (unsigned)bar_width)
     whole = (unsigned)bar_width;
-  if (whole > 0)
+  if (whole > 0) {
+    // Replace the dim track dots with blank cells before painting the fill.
+    mvwhline(win, row, col, ' ', (int)whole);
     mvwchgat(win, row, col, (int)whole, A_REVERSE, color, NULL);
+  }
   if (eighth > 0 && whole < (unsigned)bar_width) {
 #if defined(NCURSES_WIDECHAR) && NCURSES_WIDECHAR
     if (unicode_blocks) {
@@ -826,24 +827,29 @@ static void percentage_meter_draw_effective(WINDOW *win, int row, int col, int b
 // boundary.
 static void percentage_meter_draw_value(WINDOW *win, int row, int col, int bar_width, int value_space,
                                         unsigned util_cells, unsigned effective_cells, unsigned util_percentage,
-                                        short track_text_color, const char value[1024]) {
+                                        const char value[1024]) {
   if (value_space <= 0)
     return;
   int value_start = col + bar_width - value_space;
   for (int i = 0; i < value_space; ++i) {
     unsigned cell = (unsigned)(value_start - col + i);
-    short color;
+    short fill_color = 0;
     if (cell < effective_cells)
-      color = bar_value_cyan_color;
+      fill_color = bar_effective_fill_color;
     else if (cell < util_cells)
-      color = percentage_meter_value_fill_color(util_percentage);
-    else
-      color = track_text_color;
-    if (color > 0)
-      wcolor_set(win, color, NULL);
-    else
+      fill_color = percentage_meter_color(util_percentage);
+    if (fill_color) {
+      // Reverse the fill pair so the terminal's default background color
+      // becomes the text color. Themes choose their fill colors to contrast
+      // with that background, so this adapts to bright and dark palettes.
+      wcolor_set(win, fill_color, NULL);
+      wattron(win, A_REVERSE);
+      mvwaddch(win, row, value_start + i, value[i]);
+      wattroff(win, A_REVERSE);
+    } else {
       wstandend(win);
-    mvwaddch(win, row, value_start + i, value[i]);
+      mvwaddch(win, row, value_start + i, value[i]);
+    }
   }
   wstandend(win);
 }
@@ -858,7 +864,7 @@ static void percentage_meter_draw(WINDOW *win, const char *prelude, unsigned int
   waddch(win, ' ');
 
   struct percentage_meter_layout layout = percentage_meter_layout(win, value);
-  bool has_track = percentage_meter_draw_track(win, 0, layout.curx, layout.bar_width);
+  percentage_meter_draw_track(win, 0, layout.curx, layout.bar_width);
 
   short base_fill_color = percentage_meter_color(util_percentage);
   percentage_meter_draw_bar(win, 0, layout.curx, layout.bar_width, util_percentage, base_fill_color,
@@ -879,7 +885,7 @@ static void percentage_meter_draw(WINDOW *win, const char *prelude, unsigned int
   if (effective_cells > util_cells)
     effective_cells = util_cells;
   percentage_meter_draw_value(win, 0, layout.curx, layout.bar_width, layout.value_space, util_cells,
-                              effective_cells, util_percentage, has_track ? bar_track_text_color : 0, value);
+                              effective_cells, util_percentage, value);
   wnoutrefresh(win);
 }
 
@@ -1237,7 +1243,7 @@ static void draw_devices(struct list_head *devices, struct nvtop_interface *inte
   struct gpu_info *device;
   unsigned dev_id = 0;
   bool legacy_meters = interface->options.meter_style == nvtop_meter_style_legacy || COLORS < 256 ||
-                       COLOR_PAIRS <= bar_track_text_color;
+                       COLOR_PAIRS <= bar_effective_red_color;
 
   list_for_each_entry(device, devices, list) {
     struct device_window *dev = &interface->devices_win[dev_id];
