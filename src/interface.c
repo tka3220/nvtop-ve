@@ -753,7 +753,9 @@ static void percentage_meter_draw_track(WINDOW *win, int row, int col, int width
 // available, and full-cell precision otherwise.
 static void percentage_meter_draw_bar(WINDOW *win, int row, int col, int bar_width, unsigned int percentage,
                                       short color, bool unicode_blocks) {
+#if !defined(NCURSES_WIDECHAR) || !NCURSES_WIDECHAR
   (void)unicode_blocks;
+#endif
   if (bar_width <= 0)
     return;
   if (percentage > 100)
