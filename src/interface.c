@@ -885,8 +885,6 @@ static void percentage_meter_draw(WINDOW *win, const char *prelude, unsigned int
   unsigned effective_cells = draw_effective && effective_percentage > 0
                                  ? percentage_meter_cells(effective_percentage, layout.bar_width)
                                  : 0;
-  if (effective_cells > util_cells)
-    effective_cells = util_cells;
   percentage_meter_draw_value(win, 0, layout.curx, layout.bar_width, layout.value_space, util_cells,
                               effective_cells, util_percentage, value);
   wnoutrefresh(win);
