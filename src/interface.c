@@ -383,16 +383,43 @@ static void initialize_gpu_mem_plot(struct plot_window *plot, struct window_posi
   mvwprintw(plot->win, 1 + rows / 2, 0, " 50");
   mvwprintw(plot->win, 1, 0, "100");
   mvwprintw(plot->win, rows, 0, "  0");
-  plot->data = calloc(cols, sizeof(*plot->data));
-  plot->num_data = cols;
-
   unsigned column_divisor = 0;
   for (unsigned i = 0; i < plot->num_devices_to_plot; ++i) {
     unsigned dev_id = plot->devices_ids[i];
-    plot_info_to_draw to_draw = options->gpu_specific_opts[dev_id].to_draw;
-    column_divisor += plot_count_draw_info(to_draw);
+    column_divisor += plot_count_draw_info(options->gpu_specific_opts[dev_id].to_draw);
   }
-  assert(column_divisor > 0);
+  if (column_divisor == 0)
+    column_divisor = 1;
+
+  bool braille_plot = options->plot_style == nvtop_plot_style_braille && nvtop_plot_supports_braille();
+  size_t samples_per_line;
+  if (braille_plot) {
+    unsigned samples_per_column = options->plot_double_resolution ? PLOT_MAX_SAMPLES_PER_COLUMN : 1;
+    samples_per_line = (size_t)cols * samples_per_column;
+  } else {
+    // The legacy renderer advances one column per metric per update, so the
+    // plot width is shared between the metrics displayed in this plot. Round
+    // up so the newest group reaches the right edge; the renderer clips the
+    // final partial group.
+    samples_per_line = (cols + column_divisor - 1) / column_divisor;
+    if (samples_per_line == 0)
+      samples_per_line = 1;
+  }
+  plot->num_samples = samples_per_line;
+  // Allocate for the widest mode so the buffer stays valid if the number of
+  // metrics changes without reinitializing the plot.
+  plot->num_data = (size_t)cols * PLOT_MAX_SAMPLES_PER_COLUMN * MAX_LINES_PER_PLOT;
+  plot->data = calloc(plot->num_data, sizeof(*plot->data));
+  if (!plot->data) {
+    perror("Cannot allocate memory: ");
+    exit(EXIT_FAILURE);
+  }
+
+  int total_seconds = (int)((unsigned long long)options->update_interval * plot->num_samples / 1000);
+  int quarter_seconds = (int)((unsigned long long)options->update_interval * plot->num_samples / 4 / 1000);
+  int half_seconds = (int)((unsigned long long)options->update_interval * plot->num_samples / 2 / 1000);
+  int three_quarter_seconds = (int)((unsigned long long)options->update_interval * plot->num_samples * 3 / 4 / 1000);
+
   char elapsedSeconds[16];
   char *err = "err";
   char *zeroSec = "0s";
@@ -400,32 +427,28 @@ static void initialize_gpu_mem_plot(struct plot_window *plot, struct window_posi
     char *toPrint = zeroSec;
     mvwprintw(plot->win, position->sizeY - 1, 4, "%s", toPrint);
 
-    int retval = snprintf(elapsedSeconds, sizeof(elapsedSeconds), "%ds",
-                          options->update_interval * cols / 4 / column_divisor / 1000);
+    int retval = snprintf(elapsedSeconds, sizeof(elapsedSeconds), "%ds", quarter_seconds);
     if (retval >= (int)sizeof(elapsedSeconds))
       toPrint = err;
     else
       toPrint = elapsedSeconds;
     mvwprintw(plot->win, position->sizeY - 1, 4 + cols / 4 - strlen(toPrint) / 2, "%s", toPrint);
 
-    retval = snprintf(elapsedSeconds, sizeof(elapsedSeconds), "%ds",
-                      options->update_interval * cols / 2 / column_divisor / 1000);
+    retval = snprintf(elapsedSeconds, sizeof(elapsedSeconds), "%ds", half_seconds);
     if (retval >= (int)sizeof(elapsedSeconds))
       toPrint = err;
     else
       toPrint = elapsedSeconds;
     mvwprintw(plot->win, position->sizeY - 1, 4 + cols / 2 - strlen(toPrint) / 2, "%s", toPrint);
 
-    retval = snprintf(elapsedSeconds, sizeof(elapsedSeconds), "%ds",
-                      options->update_interval * cols * 3 / 4 / column_divisor / 1000);
+    retval = snprintf(elapsedSeconds, sizeof(elapsedSeconds), "%ds", three_quarter_seconds);
     if (retval >= (int)sizeof(elapsedSeconds))
       toPrint = err;
     else
       toPrint = elapsedSeconds;
     mvwprintw(plot->win, position->sizeY - 1, 4 + cols * 3 / 4 - strlen(toPrint) / 2, "%s", toPrint);
 
-    retval = snprintf(elapsedSeconds, sizeof(elapsedSeconds), "%ds",
-                      options->update_interval * cols / column_divisor / 1000);
+    retval = snprintf(elapsedSeconds, sizeof(elapsedSeconds), "%ds", total_seconds);
     if (retval >= (int)sizeof(elapsedSeconds))
       toPrint = err;
     else
@@ -433,32 +456,28 @@ static void initialize_gpu_mem_plot(struct plot_window *plot, struct window_posi
     mvwprintw(plot->win, position->sizeY - 1, 4 + cols - strlen(toPrint), "%s", toPrint);
   } else {
     char *toPrint;
-    int retval = snprintf(elapsedSeconds, sizeof(elapsedSeconds), "%ds",
-                          options->update_interval * cols / column_divisor / 1000);
+    int retval = snprintf(elapsedSeconds, sizeof(elapsedSeconds), "%ds", total_seconds);
     if (retval >= (int)sizeof(elapsedSeconds))
       toPrint = err;
     else
       toPrint = elapsedSeconds;
     mvwprintw(plot->win, position->sizeY - 1, 4, "%s", toPrint);
 
-    retval = snprintf(elapsedSeconds, sizeof(elapsedSeconds), "%ds",
-                      options->update_interval * cols * 3 / 4 / column_divisor / 1000);
+    retval = snprintf(elapsedSeconds, sizeof(elapsedSeconds), "%ds", three_quarter_seconds);
     if (retval >= (int)sizeof(elapsedSeconds))
       toPrint = err;
     else
       toPrint = elapsedSeconds;
     mvwprintw(plot->win, position->sizeY - 1, 4 + cols / 4 - strlen(toPrint) / 2, "%s", toPrint);
 
-    retval = snprintf(elapsedSeconds, sizeof(elapsedSeconds), "%ds",
-                      options->update_interval * cols / 2 / column_divisor / 1000);
+    retval = snprintf(elapsedSeconds, sizeof(elapsedSeconds), "%ds", half_seconds);
     if (retval >= (int)sizeof(elapsedSeconds))
       toPrint = err;
     else
       toPrint = elapsedSeconds;
     mvwprintw(plot->win, position->sizeY - 1, 4 + cols / 2 - strlen(toPrint) / 2, "%s", toPrint);
 
-    retval = snprintf(elapsedSeconds, sizeof(elapsedSeconds), "%ds",
-                      options->update_interval * cols / 4 / column_divisor / 1000);
+    retval = snprintf(elapsedSeconds, sizeof(elapsedSeconds), "%ds", quarter_seconds);
     if (retval >= (int)sizeof(elapsedSeconds))
       toPrint = err;
     else
@@ -2294,11 +2313,10 @@ void save_current_data_to_ring(struct list_head *devices, struct nvtop_interface
 }
 
 static unsigned populate_plot_data_from_ring_buffer(struct list_head *devices, const struct nvtop_interface *interface,
-                                                    struct plot_window *plot_win, unsigned size_data_buff,
-                                                    double data[size_data_buff],
+                                                    struct plot_window *plot_win, double *data,
                                                     char plot_legend[MAX_LINES_PER_PLOT][PLOT_MAX_LEGEND_SIZE]) {
 
-  memset(data, 0, size_data_buff * sizeof(*data));
+  memset(data, 0, plot_win->num_data * sizeof(*data));
   unsigned total_to_draw = 0;
   for (unsigned i = 0; i < plot_win->num_devices_to_plot; ++i) {
     unsigned dev_id = plot_win->devices_ids[i];
@@ -2307,8 +2325,8 @@ static unsigned populate_plot_data_from_ring_buffer(struct list_head *devices, c
   }
 
   assert(total_to_draw > 0);
-  assert(size_data_buff % total_to_draw == 0);
-  unsigned max_data_to_copy = size_data_buff / total_to_draw;
+  assert(plot_win->num_samples * total_to_draw <= plot_win->num_data);
+  size_t max_data_to_copy = plot_win->num_samples;
   double (*data_split)[total_to_draw] = (double (*)[total_to_draw])data;
 
   unsigned in_processing = 0;
@@ -2400,11 +2418,11 @@ static void draw_plots(struct list_head *devices, struct nvtop_interface *interf
     char plot_legend[MAX_LINES_PER_PLOT][PLOT_MAX_LEGEND_SIZE];
 
     unsigned num_lines = populate_plot_data_from_ring_buffer(devices, interface, &interface->plots[plot_id],
-                                                             interface->plots[plot_id].num_data,
                                                              interface->plots[plot_id].data, plot_legend);
 
-    nvtop_line_plot(interface->plots[plot_id].plot_window, interface->plots[plot_id].num_data,
-                    interface->plots[plot_id].data, num_lines, !interface->options.plot_left_to_right, plot_legend);
+    nvtop_line_plot(interface->plots[plot_id].plot_window, interface->plots[plot_id].num_samples,
+                    interface->plots[plot_id].data, num_lines, interface->options.plot_style,
+                    !interface->options.plot_left_to_right, plot_legend);
 
     wnoutrefresh(interface->plots[plot_id].plot_window);
   }

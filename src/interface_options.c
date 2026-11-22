@@ -139,6 +139,8 @@ void alloc_interface_options_internals(char *config_location, unsigned num_devic
   options->gpu_plot_color_idx[1] = 3;  // Yellow
   options->gpu_plot_color_idx[2] = 2;  // Green
   options->gpu_plot_color_idx[3] = 4;  // Blue
+  options->plot_style = nvtop_plot_style_braille;
+  options->plot_double_resolution = false;
   if (config_location) {
     options->config_file_location = malloc(strlen(config_location) + 1);
     if (!options->config_file_location) {
@@ -185,6 +187,9 @@ static const char header_value_all_info_bar[] = "AllInfoBar";
 
 static const char chart_section[] = "ChartOption";
 static const char chart_value_reverse[] = "ReverseChart";
+static const char chart_value_graph_style[] = "GraphStyle";
+static const char chart_value_double_resolution[] = "DoublePlotResolution";
+static const char *chart_graph_style_names[nvtop_plot_style_count] = {"braille", "line"};
 static const char *chart_value_gpu_plot_color[MAX_LINES_PER_PLOT] = {
     "GpuPlotColor0", "GpuPlotColor1", "GpuPlotColor2", "GpuPlotColor3"};
 
@@ -281,6 +286,18 @@ static int nvtop_option_ini_handler(void *user, const char *section, const char 
       if (strcmp(value, "false") == 0) {
         ini_data->options->plot_left_to_right = false;
       }
+    }
+    if (strcmp(name, chart_value_graph_style) == 0) {
+      for (unsigned i = 0; i < nvtop_plot_style_count; ++i) {
+        if (strcmp(value, chart_graph_style_names[i]) == 0)
+          ini_data->options->plot_style = (enum nvtop_plot_style)i;
+      }
+    }
+    if (strcmp(name, chart_value_double_resolution) == 0) {
+      if (strcmp(value, "true") == 0)
+        ini_data->options->plot_double_resolution = true;
+      if (strcmp(value, "false") == 0)
+        ini_data->options->plot_double_resolution = false;
     }
     for (unsigned s = 0; s < MAX_LINES_PER_PLOT; ++s) {
       if (strcmp(name, chart_value_gpu_plot_color[s]) == 0) {
@@ -455,6 +472,8 @@ bool save_interface_options_to_config_file(unsigned total_dev_count, const nvtop
   // Chart Options
   fprintf(config_file, "\n[%s]\n", chart_section);
   fprintf(config_file, "%s = %s\n", chart_value_reverse, boolean_string(options->plot_left_to_right));
+  fprintf(config_file, "%s = %s\n", chart_value_graph_style, chart_graph_style_names[options->plot_style]);
+  fprintf(config_file, "%s = %s\n", chart_value_double_resolution, boolean_string(options->plot_double_resolution));
   for (unsigned s = 0; s < MAX_LINES_PER_PLOT; ++s)
     fprintf(config_file, "%s = %s\n", chart_value_gpu_plot_color[s],
             plot_color_names[options->gpu_plot_color_idx[s]]);

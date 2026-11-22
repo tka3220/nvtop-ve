@@ -117,6 +117,7 @@ struct process_window {
 
 struct plot_window {
   size_t num_data;
+  size_t num_samples; // Samples displayed per line (fixed by the plot width)
   double *data;
   WINDOW *win;
   WINDOW *plot_window;

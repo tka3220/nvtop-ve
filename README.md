@@ -81,6 +81,17 @@ In the ``Chart`` section you can choose which metrics are plotted, including GPU
 utilization, temperature, power, clocks, and the **PCIe RX / TX load** (the receive and transmit
 throughput as a percentage of the maximum link bandwidth).
 
+Charts are drawn with Unicode braille dots by default. Each character cell is a 2x4 dot
+matrix, with one data sample per column (one per update tick) shared by all metrics in the
+chart. The ``Double braille plot resolution`` option draws two samples per column for more
+detail and twice the history; it can also be enabled with ``--double-plot-resolution``. This
+mode only applies to braille. The legacy line style keeps the original layout: one column per
+metric per update, so a chart with N metrics advances N columns per update and shows a shorter
+time span. The ``Smooth braille plots`` option switches back to the legacy line-drawing style
+(also ``--legacy-plot`` or ``GraphStyle = line`` in the config). If the terminal or locale
+cannot represent braille characters, nvtop automatically falls back to the legacy renderer.
+Press ``F12`` to save the choice.
+
 ![NVTOP Setup Window](/screenshot/Nvtop-config.png)
 
 ### Saving Preferences

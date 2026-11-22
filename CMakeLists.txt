@@ -28,7 +28,7 @@ set(CURSES_NEED_NCURSES TRUE)
 # Try to find ncurses with unicode support first
 set(CURSES_NEED_WIDE TRUE)
 find_package(Curses QUIET)
-if (NOT CURSE_FOUND)
+if (NOT CURSES_FOUND)
   # Fallback to regular ncurses library, which may also support unicode!
   set(CURSES_NEED_WIDE FALSE)
   find_package(Curses REQUIRED)
@@ -37,6 +37,12 @@ endif()
 add_library(ncurses INTERFACE IMPORTED)
 set_property(TARGET ncurses PROPERTY
   INTERFACE_INCLUDE_DIRECTORIES ${CURSES_INCLUDE_DIRS})
+# FindCurses computes the feature-test macros (for example _XOPEN_SOURCE) that
+# make NCURSES_WIDECHAR visible when linking against ncursesw. Forward them so
+# the wide-character code is not accidentally compiled out on platforms where
+# _GNU_SOURCE alone does not imply _XOPEN_SOURCE >= 500.
+set_property(TARGET ncurses PROPERTY
+  INTERFACE_COMPILE_OPTIONS ${CURSES_CFLAGS})
 set_property(TARGET ncurses PROPERTY
   INTERFACE_LINK_LIBRARIES ${CURSES_LIBRARIES})
 add_compile_definitions(NCURSES_ENABLE_STDBOOL_H=1)

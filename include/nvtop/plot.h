@@ -30,8 +30,17 @@
 
 #define PLOT_MAX_LEGEND_SIZE 35
 
-void nvtop_line_plot(WINDOW *win, size_t num_data, const double *data, unsigned num_plots, bool legend_left,
+// Maximum number of data samples drawn inside one character column. Unicode
+// braille cells are two dots wide, so two samples per column use the full
+// horizontal resolution of the renderer without overplotting samples.
+#define PLOT_MAX_SAMPLES_PER_COLUMN 2
+
+void nvtop_line_plot(WINDOW *win, size_t num_samples, const double *data, unsigned num_lines,
+                     enum nvtop_plot_style style, bool legend_left,
                      char legend[MAX_LINES_PER_PLOT][PLOT_MAX_LEGEND_SIZE]);
+
+// Whether the current build and locale can display Unicode braille patterns.
+bool nvtop_plot_supports_braille(void);
 
 void draw_rectangle(WINDOW *win, unsigned startX, unsigned startY, unsigned sizeX, unsigned sizeY);
 
