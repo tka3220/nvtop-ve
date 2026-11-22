@@ -369,7 +369,7 @@ static void draw_setup_window_header(struct nvtop_interface *interface) {
 
   // Graphical utilization bars
   if (interface->options.meter_style == nvtop_meter_style_graphical)
-    option_state = COLORS < 256 ? option_partially_active : option_on;
+    option_state = interface_supports_graphical_meters(interface) ? option_on : option_partially_active;
   else
     option_state = option_off;
   mvwprintw(options_win, setup_header_meter_style + 1, 0, "[%c] %s", option_state_char(option_state),

@@ -1242,8 +1242,7 @@ static struct gpu_info *get_device_by_id(struct list_head *devices, unsigned id)
 static void draw_devices(struct list_head *devices, struct nvtop_interface *interface) {
   struct gpu_info *device;
   unsigned dev_id = 0;
-  bool legacy_meters = interface->options.meter_style == nvtop_meter_style_legacy || COLORS < 256 ||
-                       COLOR_PAIRS <= bar_effective_red_color;
+  bool legacy_meters = !interface_supports_graphical_meters(interface);
 
   list_for_each_entry(device, devices, list) {
     struct device_window *dev = &interface->devices_win[dev_id];
