@@ -81,7 +81,7 @@ static unsigned sample_to_column(size_t sample, size_t num_samples, unsigned col
 // true the samples are spread over the whole window instead (used when a
 // braille frame could not be allocated).
 static void nvtop_line_plot_line(WINDOW *win, size_t num_samples, const double *data, unsigned num_lines,
-                                 bool full_width) {
+                                 bool full_width, bool newest_left) {
   int rows = getmaxy(win);
   int cols = getmaxx(win);
   rows -= 1;
@@ -96,9 +96,14 @@ static void nvtop_line_plot_line(WINDOW *win, size_t num_samples, const double *
 
   for (size_t sample = 0; sample < num_samples; ++sample) {
     for (unsigned k = 0; k < num_lines; ++k) {
-      unsigned x = full_width ? sample_to_column(sample, num_samples, (unsigned)cols)
-                              : (unsigned)(sample * num_lines + k);
-      if (x >= (unsigned)cols)
+      int x;
+      if (full_width) {
+        x = (int)sample_to_column(sample, num_samples, (unsigned)cols);
+      } else {
+        int base_x = newest_left ? 0 : cols - (int)(num_samples * num_lines);
+        x = base_x + (int)(sample * num_lines + k);
+      }
+      if (x < 0 || x >= cols)
         continue;
       unsigned lvl_now_k = data_level(rows, data[sample * num_lines + k], increment);
       wcolor_set(win, plot_line_colors[k], NULL);
@@ -343,7 +348,7 @@ bool nvtop_plot_supports_unicode_blocks(void) {
 }
 
 void nvtop_line_plot(WINDOW *win, size_t num_samples, const double *data, unsigned num_lines,
-                     enum nvtop_plot_style style, bool legend_left,
+                     enum nvtop_plot_style style, bool legend_left, bool newest_left,
                      char legend[MAX_LINES_PER_PLOT][PLOT_MAX_LEGEND_SIZE]) {
   if (num_samples == 0 || num_lines == 0 || num_lines > MAX_LINES_PER_PLOT)
     return;
@@ -362,7 +367,7 @@ void nvtop_line_plot(WINDOW *win, size_t num_samples, const double *data, unsign
   }
 #endif
   if (!plotted) {
-    nvtop_line_plot_line(win, num_samples, data, num_lines, braille_layout);
+    nvtop_line_plot_line(win, num_samples, data, num_lines, braille_layout, newest_left);
   }
 
   draw_plot_legend(win, rows, cols, num_lines, legend_left, legend);

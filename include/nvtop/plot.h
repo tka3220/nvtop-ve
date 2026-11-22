@@ -36,7 +36,7 @@
 #define PLOT_MAX_SAMPLES_PER_COLUMN 2
 
 void nvtop_line_plot(WINDOW *win, size_t num_samples, const double *data, unsigned num_lines,
-                     enum nvtop_plot_style style, bool legend_left,
+                     enum nvtop_plot_style style, bool legend_left, bool newest_left,
                      char legend[MAX_LINES_PER_PLOT][PLOT_MAX_LEGEND_SIZE]);
 
 // Whether the current build and locale can display Unicode braille patterns.

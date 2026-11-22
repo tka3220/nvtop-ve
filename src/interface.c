@@ -2688,7 +2688,7 @@ static void draw_plots(struct list_head *devices, struct nvtop_interface *interf
 
     nvtop_line_plot(interface->plots[plot_id].plot_window, interface->plots[plot_id].num_samples,
                     interface->plots[plot_id].data, num_lines, interface->options.plot_style,
-                    !interface->options.plot_left_to_right, plot_legend);
+                    !interface->options.plot_left_to_right, interface->options.plot_left_to_right, plot_legend);
 
     wnoutrefresh(interface->plots[plot_id].plot_window);
   }
