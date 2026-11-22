@@ -316,6 +316,10 @@ static void nvtop_line_plot_braille(WINDOW *win, size_t num_samples, const doubl
 
 #endif // NCURSES_WIDECHAR
 
+size_t nvtop_plot_braille_scratch_size(unsigned rows, unsigned cols) {
+  return (size_t)MAX_LINES_PER_PLOT * (size_t)rows * (size_t)cols;
+}
+
 // The locale is set once at startup (before any drawing), so the capability
 // checks are computed on first use and cached.
 bool nvtop_plot_supports_braille(void) {

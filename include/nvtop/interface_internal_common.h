@@ -127,7 +127,7 @@ struct plot_window {
   size_t num_data;
   size_t num_samples; // Samples displayed per line (fixed by the plot width)
   double *data;
-  uint8_t *braille_masks; // Renderer scratch, PLOT_BRAILLE_MASKS_SIZE bytes for plot_window
+  uint8_t *braille_masks; // Renderer scratch, nvtop_plot_braille_scratch_size(rows, cols) bytes
   WINDOW *win;
   WINDOW *plot_window;
   unsigned num_devices_to_plot;

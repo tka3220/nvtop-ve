@@ -417,7 +417,7 @@ static void initialize_gpu_mem_plot(struct plot_window *plot, struct window_posi
   plot->num_data = (size_t)cols * PLOT_MAX_SAMPLES_PER_COLUMN * MAX_LINES_PER_PLOT;
   plot->data = calloc(plot->num_data, sizeof(*plot->data));
   // Sized for the most lines a plot can hold, independently of the plot style.
-  plot->braille_masks = malloc(PLOT_BRAILLE_MASKS_SIZE(rows, cols));
+  plot->braille_masks = malloc(nvtop_plot_braille_scratch_size(rows, cols));
   if (!plot->data || !plot->braille_masks) {
     endwin();
     perror("Cannot allocate memory: ");
@@ -801,7 +801,7 @@ static void percentage_meter_draw_track(WINDOW *win, int row, int col, int width
   wattron(win, A_DIM);
 #if defined(NCURSES_WIDECHAR) && NCURSES_WIDECHAR
   if (unicode_blocks && nvtop_plot_supports_middle_dot()) {
-    wchar_t dot[2] = {L'·', L'\0'};
+    wchar_t dot[2] = {L'\u00B7', L'\0'};
     for (int i = 0; i < width; ++i)
       mvwaddnwstr(win, row, col + i, dot, 1);
   } else

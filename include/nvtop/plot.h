@@ -38,10 +38,11 @@
 
 // Size in bytes of the scratch buffer nvtop_line_plot needs for a plot window of
 // rows x cols cells: one braille dot mask per cell for every line.
-#define PLOT_BRAILLE_MASKS_SIZE(rows, cols) ((size_t)MAX_LINES_PER_PLOT * (size_t)(rows) * (size_t)(cols))
+size_t nvtop_plot_braille_scratch_size(unsigned rows, unsigned cols);
 
-// braille_masks is caller-owned scratch memory of PLOT_BRAILLE_MASKS_SIZE bytes
-// for the window's size; it is only used by the braille renderer.
+// braille_masks is caller-owned scratch memory of
+// nvtop_plot_braille_scratch_size(rows, cols) bytes; it is only used by the
+// braille renderer.
 void nvtop_line_plot(WINDOW *win, size_t num_samples, const double *data, unsigned num_lines,
                      enum nvtop_plot_style style, bool newest_left, uint8_t *braille_masks,
                      char legend[MAX_LINES_PER_PLOT][PLOT_MAX_LEGEND_SIZE]);

@@ -92,16 +92,17 @@ plots``, use ``--legacy-plot``, or set ``GraphStyle = line`` to select the legac
 style. If the terminal or locale cannot represent braille characters, nvtop automatically
 falls back to the legacy renderer. Press ``F12`` to save the choice.
 
-The device utilization meters use graphical bars by default on 256-color terminals. They use
-a dim dot track in the terminal's default foreground, a solid threshold-colored fill (green
-below 50%, yellow from 50% to 79%, red at 80% or more), and 1/8-block precision when Unicode
-block elements are available. The fill colors come from the terminal's ANSI palette, and the
-value text uses reverse video so it picks up the terminal's default background color and
-stays readable on both light and dark themes. Effective load is shown as a cyan fill from the
-start of the bar; when it equals utilization, the whole bar is cyan. Set ``MeterStyle =
-graphical|legacy``, use the ``Graphical utilization bars`` option in the ``Devices`` setup
-section, or pass ``--legacy-bars`` to switch to the original bracketed pipe meters. On
-terminals without color support, the legacy meters are used automatically.
+The device utilization meters use graphical bars by default when the terminal has at least 8
+colors and enough color pairs. They use a dim dot track in the terminal's default foreground,
+a solid threshold-colored fill (green below 50%, yellow from 50% to 79%, red at 80% or more),
+and 1/8-block precision when Unicode block elements are available. The fill colors come from
+the terminal's ANSI palette, and the value text uses reverse video so it picks up the
+terminal's default background color and stays readable on both light and dark themes.
+Effective load is shown as a cyan fill from the start of the bar; when it equals utilization,
+the whole bar is cyan. Set ``MeterStyle = graphical|legacy``, use the ``Graphical utilization
+bars`` option in the ``Devices`` setup section, or pass ``--legacy-bars`` to switch to the
+original bracketed pipe meters. On terminals with fewer than 8 colors or too few color pairs,
+the legacy meters are used automatically.
 
 ![NVTOP Setup Window](/screenshot/Nvtop-config.png)
 
