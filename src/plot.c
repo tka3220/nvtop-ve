@@ -30,6 +30,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <tgmath.h>
 #include <wchar.h>
 
@@ -176,7 +177,7 @@ static const uint8_t braille_dot_bits[BRAILLE_CELL_ROWS][BRAILLE_CELL_COLS] = {
 
 static bool locale_encodes_utf8(void) {
   const char *codeset = nl_langinfo(CODESET);
-  return codeset && (strcmp(codeset, "UTF-8") == 0 || strcmp(codeset, "UTF8") == 0);
+  return codeset && (strcasecmp(codeset, "UTF-8") == 0 || strcasecmp(codeset, "UTF8") == 0);
 }
 
 static bool terminal_supports_braille(void) {
