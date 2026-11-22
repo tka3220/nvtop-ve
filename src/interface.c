@@ -1304,8 +1304,11 @@ static void draw_devices(struct list_head *devices, struct nvtop_interface *inte
     }
     if (GPUINFO_DYNAMIC_FIELD_VALID(&device->dynamic_info, gpu_util_rate)) {
       if (GPUINFO_DYNAMIC_FIELD_VALID(&device->dynamic_info, effective_load_rate)) {
+        int value_space = getmaxx(gpu_util_win) - (int)strlen(DEVICE_UNIT_NAME(device)) - (legacy_meters ? 2 : 1);
         snprintf(buff, 1024, "%u%%(eff %u%%)", device->dynamic_info.gpu_util_rate,
                  device->dynamic_info.effective_load_rate);
+        if ((int)strlen(buff) > value_space)
+          snprintf(buff, 1024, "%u%%", device->dynamic_info.gpu_util_rate);
         draw_percentage_meter_with_effective_overlay(gpu_util_win, DEVICE_UNIT_NAME(device),
                                                      device->dynamic_info.gpu_util_rate,
                                                      device->dynamic_info.effective_load_rate, buff, legacy_meters);
@@ -1331,8 +1334,12 @@ static void draw_devices(struct list_head *devices, struct nvtop_interface *inte
         total_prefixed /= 1024.;
         used_prefixed /= 1024.;
       }
-      snprintf(buff, 1024, "%.3f%s/%.3f%s", used_prefixed, memory_prefix[prefix_off], total_prefixed,
-               memory_prefix[prefix_off]);
+      if (getmaxx(mem_util_win) < 34)
+        snprintf(buff, 1024, "%.1f%s/%.1f%s", used_prefixed, memory_prefix[prefix_off], total_prefixed,
+                 memory_prefix[prefix_off]);
+      else
+        snprintf(buff, 1024, "%.3f%s/%.3f%s", used_prefixed, memory_prefix[prefix_off], total_prefixed,
+                 memory_prefix[prefix_off]);
       draw_percentage_meter(mem_util_win, memory_label,
                             total_mem > 0 ? (unsigned int)(100. * used_mem / total_mem) : 0, buff,
                             legacy_meters);
@@ -1343,7 +1350,10 @@ static void draw_devices(struct list_head *devices, struct nvtop_interface *inte
       for (prefix_off = 0; prefix_off < 5 && total_prefixed >= 1000.; ++prefix_off) {
         total_prefixed /= 1024.;
       }
-      snprintf(buff, 1024, "N/A/%.3f%s", total_prefixed, memory_prefix[prefix_off]);
+      if (getmaxx(mem_util_win) < 26)
+        snprintf(buff, 1024, "N/A/%.1f%s", total_prefixed, memory_prefix[prefix_off]);
+      else
+        snprintf(buff, 1024, "N/A/%.3f%s", total_prefixed, memory_prefix[prefix_off]);
       draw_percentage_meter(mem_util_win, memory_label, 0, buff, legacy_meters);
     } else {
       snprintf(buff, 1024, "N/A");
