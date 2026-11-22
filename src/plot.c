@@ -24,7 +24,6 @@
 
 #include <assert.h>
 #include <langinfo.h>
-#include <locale.h>
 #include <ncurses.h>
 #include <stdbool.h>
 #include <stdint.h>
