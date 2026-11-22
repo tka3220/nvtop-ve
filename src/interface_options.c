@@ -140,6 +140,7 @@ void alloc_interface_options_internals(char *config_location, unsigned num_devic
   options->gpu_plot_color_idx[2] = 2;  // Green
   options->gpu_plot_color_idx[3] = 4;  // Blue
   options->plot_style = nvtop_plot_style_braille;
+  options->meter_style = nvtop_meter_style_graphical;
   options->plot_double_resolution = false;
   if (config_location) {
     options->config_file_location = malloc(strlen(config_location) + 1);
@@ -184,6 +185,8 @@ static const char header_value_use_fahrenheit[] = "UseFahrenheit";
 static const char header_value_encode_decode_timer[] = "EncodeHideTimer";
 static const char header_value_gpu_info_bar[] = "GPUInfoBar";
 static const char header_value_all_info_bar[] = "AllInfoBar";
+static const char header_value_meter_style[] = "MeterStyle";
+static const char *header_meter_style_names[nvtop_meter_style_count] = {"graphical", "legacy"};
 
 static const char chart_section[] = "ChartOption";
 static const char chart_value_reverse[] = "ReverseChart";
@@ -274,6 +277,12 @@ static int nvtop_option_ini_handler(void *user, const char *section, const char 
       }
       if (strcmp(value, "false") == 0) {
         ini_data->options->has_all_info_bar = false;
+      }
+    }
+    if (strcmp(name, header_value_meter_style) == 0) {
+      for (unsigned i = 0; i < nvtop_meter_style_count; ++i) {
+        if (strcmp(value, header_meter_style_names[i]) == 0)
+          ini_data->options->meter_style = (enum nvtop_meter_style)i;
       }
     }
   }
@@ -468,6 +477,7 @@ bool save_interface_options_to_config_file(unsigned total_dev_count, const nvtop
   fprintf(config_file, "%s = %e\n", header_value_encode_decode_timer, options->encode_decode_hiding_timer);
   fprintf(config_file, "%s = %s\n", header_value_gpu_info_bar, boolean_string(options->has_gpu_info_bar));
   fprintf(config_file, "%s = %s\n", header_value_all_info_bar, boolean_string(options->has_all_info_bar));
+  fprintf(config_file, "%s = %s\n", header_value_meter_style, header_meter_style_names[options->meter_style]);
 
   // Chart Options
   fprintf(config_file, "\n[%s]\n", chart_section);

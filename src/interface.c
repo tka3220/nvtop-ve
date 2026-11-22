@@ -612,6 +612,22 @@ static void initialize_colors(const unsigned char plot_color_idx[MAX_LINES_PER_P
   init_pair(yellow_color, COLOR_YELLOW, background_color);
   init_pair(blue_color, COLOR_BLUE, background_color);
   init_pair(magenta_color, COLOR_MAGENTA, background_color);
+  // Keep the meters on the terminal's ANSI palette so they follow the user's
+  // theme. The fill pairs use the track color as their background; the cells
+  // are reversed when painted.
+  init_pair(bar_green_color, COLOR_GREEN, COLOR_BLACK);
+  init_pair(bar_yellow_color, COLOR_YELLOW, COLOR_BLACK);
+  init_pair(bar_red_color, COLOR_RED, COLOR_BLACK);
+  init_pair(bar_effective_fill_color, COLOR_CYAN, COLOR_BLACK);
+  init_pair(bar_effective_green_color, COLOR_CYAN, COLOR_GREEN);
+  init_pair(bar_effective_yellow_color, COLOR_CYAN, COLOR_YELLOW);
+  init_pair(bar_effective_red_color, COLOR_CYAN, COLOR_RED);
+  init_pair(bar_value_green_color, COLOR_BLACK, COLOR_GREEN);
+  init_pair(bar_value_yellow_color, COLOR_BLACK, COLOR_YELLOW);
+  init_pair(bar_value_red_color, COLOR_WHITE, COLOR_RED);
+  init_pair(bar_value_cyan_color, COLOR_BLACK, COLOR_CYAN);
+  init_pair(bar_track_color, COLOR_BLACK, COLOR_BLACK);
+  init_pair(bar_track_text_color, COLOR_WHITE, COLOR_BLACK);
   static const short gpu_plot_pairs[MAX_LINES_PER_PLOT] = {
       gpu_util_plot_color, gpu_mem_plot_color, gpu_plot_color_3, gpu_plot_color_4};
   for (unsigned s = 0; s < MAX_LINES_PER_PLOT; ++s)
@@ -669,8 +685,207 @@ void clean_ncurses(struct nvtop_interface *interface) {
   free(interface);
 }
 
-static void draw_percentage_meter(WINDOW *win, const char *prelude, unsigned int new_percentage,
-                                  const char inside_braces_right[1024]) {
+static short percentage_meter_color(unsigned int percentage) {
+  if (percentage >= 80)
+    return bar_red_color;
+  if (percentage >= 50)
+    return bar_yellow_color;
+  return bar_green_color;
+}
+
+#if defined(NCURSES_WIDECHAR) && NCURSES_WIDECHAR
+static short percentage_meter_effective_block_color(short fill_color) {
+  if (fill_color == bar_red_color)
+    return bar_effective_red_color;
+  if (fill_color == bar_yellow_color)
+    return bar_effective_yellow_color;
+  return bar_effective_green_color;
+}
+#endif
+
+static short percentage_meter_value_fill_color(unsigned int percentage) {
+  if (percentage >= 80)
+    return bar_value_red_color;
+  if (percentage >= 50)
+    return bar_value_yellow_color;
+  return bar_value_green_color;
+}
+
+// Number of character cells the bar covers for text-background purposes. A
+// partially filled cell rounds up so a glyph is never split between the bar
+// and the track.
+static unsigned percentage_meter_cells(unsigned int percentage, int bar_width) {
+  unsigned total_eighths = (unsigned)bar_width * percentage * 8u / 100u;
+  unsigned cells = total_eighths / 8u + (total_eighths % 8u != 0);
+  if (cells > (unsigned)bar_width)
+    cells = (unsigned)bar_width;
+  return cells;
+}
+
+struct percentage_meter_layout {
+  int curx;
+  int bar_width;
+  int value_space;
+};
+
+// Geometry after the prelude has been printed: the bar starts at the cursor,
+// and the right-aligned value consumes at most the whole bar width.
+static struct percentage_meter_layout percentage_meter_layout(WINDOW *win, const char *value) {
+  int curx = getcurx(win);
+  int bar_width = getmaxx(win) - curx;
+  if (bar_width < 0)
+    bar_width = 0;
+  int value_space = (int)strlen(value);
+  if (value_space > bar_width)
+    value_space = bar_width;
+  return (struct percentage_meter_layout){.curx = curx, .bar_width = bar_width, .value_space = value_space};
+}
+
+// Draw the dark track when the terminal has enough colors for it.
+static bool percentage_meter_draw_track(WINDOW *win, int row, int col, int width) {
+  mvwhline(win, row, col, ' ', width);
+  if (COLORS < 256)
+    return false;
+  mvwchgat(win, row, col, width, 0, bar_track_color, NULL);
+  return true;
+}
+
+// Draw a filled bar with 1/8-cell precision when Unicode block elements are
+// available, and full-cell precision otherwise.
+static void percentage_meter_draw_bar(WINDOW *win, int row, int col, int bar_width, unsigned int percentage,
+                                      short color, bool unicode_blocks) {
+  (void)unicode_blocks;
+  if (bar_width <= 0)
+    return;
+  if (percentage > 100)
+    percentage = 100;
+  unsigned total_eighths = (unsigned)bar_width * percentage * 8u / 100u;
+  unsigned whole = total_eighths / 8u;
+  unsigned eighth = total_eighths % 8u;
+  if (whole > (unsigned)bar_width)
+    whole = (unsigned)bar_width;
+  if (whole > 0)
+    mvwchgat(win, row, col, (int)whole, A_REVERSE, color, NULL);
+  if (eighth > 0 && whole < (unsigned)bar_width) {
+#if defined(NCURSES_WIDECHAR) && NCURSES_WIDECHAR
+    if (unicode_blocks) {
+      wchar_t glyph[2] = {(wchar_t)(0x2590u - eighth), L'\0'};
+      wcolor_set(win, color, NULL);
+      mvwaddnwstr(win, row, col + (int)whole, glyph, 1);
+      wstandend(win);
+      return;
+    }
+#endif
+    // Without Unicode block elements, round the partial cell to the nearest
+    // character column.
+    if (eighth >= 4)
+      mvwchgat(win, row, col + (int)whole, 1, A_REVERSE, color, NULL);
+  }
+}
+
+// Overlay the effective-load portion in cyan, starting at 0. When effective
+// load equals total utilization the whole bar becomes cyan.
+static void percentage_meter_draw_effective(WINDOW *win, int row, int col, int bar_width,
+                                            unsigned int effective_percentage, unsigned int util_percentage,
+                                            short base_fill_color) {
+  (void)util_percentage;
+  (void)base_fill_color;
+  unsigned total_eighths = (unsigned)bar_width * effective_percentage * 8u / 100u;
+  unsigned whole = total_eighths / 8u;
+  unsigned eighth = total_eighths % 8u;
+  if (whole > (unsigned)bar_width)
+    whole = (unsigned)bar_width;
+  if (whole > 0)
+    mvwchgat(win, row, col, (int)whole, A_REVERSE, bar_effective_fill_color, NULL);
+  if (eighth > 0 && whole < (unsigned)bar_width) {
+    bool drew_unicode = false;
+#if defined(NCURSES_WIDECHAR) && NCURSES_WIDECHAR
+    if (nvtop_plot_supports_unicode_blocks()) {
+      // A cell has one background: when the effective and utilization
+      // boundaries share a cell, the cyan block is drawn over the utilization
+      // color, rounding that utilization edge up to the cell boundary.
+      short block_color = effective_percentage == util_percentage
+                              ? bar_effective_fill_color
+                              : percentage_meter_effective_block_color(base_fill_color);
+      wchar_t glyph[2] = {(wchar_t)(0x2590u - eighth), L'\0'};
+      wcolor_set(win, block_color, NULL);
+      mvwaddnwstr(win, row, col + (int)whole, glyph, 1);
+      wstandend(win);
+      drew_unicode = true;
+    }
+#endif
+    if (!drew_unicode && eighth >= 4)
+      mvwchgat(win, row, col + (int)whole, 1, A_REVERSE, bar_effective_fill_color, NULL);
+  }
+}
+
+// Draw the right-aligned value. Each glyph keeps the underlying bar/track color
+// as its background and uses a contrasting foreground, so the bar remains
+// visible behind the text. A partially covered cell is rounded up to a full
+// character before choosing the background, so one glyph never straddles the
+// boundary.
+static void percentage_meter_draw_value(WINDOW *win, int row, int col, int bar_width, int value_space,
+                                        unsigned util_cells, unsigned effective_cells, unsigned util_percentage,
+                                        short track_text_color, const char value[1024]) {
+  if (value_space <= 0)
+    return;
+  int value_start = col + bar_width - value_space;
+  for (int i = 0; i < value_space; ++i) {
+    unsigned cell = (unsigned)(value_start - col + i);
+    short color;
+    if (cell < effective_cells)
+      color = bar_value_cyan_color;
+    else if (cell < util_cells)
+      color = percentage_meter_value_fill_color(util_percentage);
+    else
+      color = track_text_color;
+    if (color > 0)
+      wcolor_set(win, color, NULL);
+    else
+      wstandend(win);
+    mvwaddch(win, row, value_start + i, value[i]);
+  }
+  wstandend(win);
+}
+
+// Draw the full meter: prelude, track, utilization fill, optional effective
+// overlay, then the value on top.
+static void percentage_meter_draw(WINDOW *win, const char *prelude, unsigned int util_percentage,
+                                  bool draw_effective, unsigned int effective_percentage, const char value[1024]) {
+  wcolor_set(win, cyan_color, NULL);
+  mvwprintw(win, 0, 0, "%s", prelude);
+  wstandend(win);
+  waddch(win, ' ');
+
+  struct percentage_meter_layout layout = percentage_meter_layout(win, value);
+  bool has_track = percentage_meter_draw_track(win, 0, layout.curx, layout.bar_width);
+
+  short base_fill_color = percentage_meter_color(util_percentage);
+  percentage_meter_draw_bar(win, 0, layout.curx, layout.bar_width, util_percentage, base_fill_color,
+                            nvtop_plot_supports_unicode_blocks());
+
+  if (draw_effective) {
+    if (effective_percentage > util_percentage)
+      effective_percentage = util_percentage;
+    if (effective_percentage > 0)
+      percentage_meter_draw_effective(win, 0, layout.curx, layout.bar_width, effective_percentage, util_percentage,
+                                      base_fill_color);
+  }
+
+  unsigned util_cells = percentage_meter_cells(util_percentage, layout.bar_width);
+  unsigned effective_cells = draw_effective && effective_percentage > 0
+                                 ? percentage_meter_cells(effective_percentage, layout.bar_width)
+                                 : 0;
+  if (effective_cells > util_cells)
+    effective_cells = util_cells;
+  percentage_meter_draw_value(win, 0, layout.curx, layout.bar_width, layout.value_space, util_cells,
+                              effective_cells, util_percentage, has_track ? bar_track_text_color : 0, value);
+  wnoutrefresh(win);
+}
+
+// Legacy bracketed pipe meters from the original interface.
+static void draw_percentage_meter_legacy(WINDOW *win, const char *prelude, unsigned int new_percentage,
+                                         const char inside_braces_right[1024]) {
   int rows, cols;
   getmaxyx(win, rows, cols);
   (void)rows;
@@ -682,34 +897,64 @@ static void draw_percentage_meter(WINDOW *win, const char *prelude, unsigned int
   int curx, cury;
   curx = getcurx(win);
   cury = getcury(win);
-  int between_sbraces = cols - size_prelude - 2;
+  int between_sbraces = cols - (int)size_prelude - 2;
+  if (between_sbraces < 0)
+    between_sbraces = 0;
+  if (new_percentage > 100)
+    new_percentage = 100;
   float usage = round((float)between_sbraces * new_percentage / 100.f);
   int represent_usage = (int)usage;
-  whline(win, '|', (int)represent_usage);
+  whline(win, '|', represent_usage);
   mvwhline(win, cury, curx + represent_usage, ' ', between_sbraces - represent_usage);
   mvwaddch(win, cury, curx + between_sbraces, ']');
-  unsigned int right_side_braces_space_required = strlen(inside_braces_right);
-  wmove(win, cury, curx + between_sbraces - right_side_braces_space_required);
-  wprintw(win, "%s", inside_braces_right);
+  int value_length = (int)strlen(inside_braces_right);
+  if (value_length > between_sbraces)
+    value_length = between_sbraces;
+  int value_start = curx + between_sbraces - value_length;
+  if (value_start < curx)
+    value_start = curx;
+  wmove(win, cury, value_start);
+  wprintw(win, "%.*s", value_length, inside_braces_right);
   mvwchgat(win, cury, curx, represent_usage, 0, green_color, NULL);
   wnoutrefresh(win);
 }
 
-// Draw percentage with a yellow highlight percentage (yellow percentage <= new_percentage)
-static void draw_percentage_meter_with_yellow_highlight(WINDOW *win, const char *prelude, unsigned int new_percentage,
-                                                        unsigned int yellow_percentage,
-                                                        const char inside_braces_right[1024]) {
-  draw_percentage_meter(win, prelude, new_percentage, inside_braces_right);
+static void draw_percentage_meter_with_yellow_highlight_legacy(WINDOW *win, const char *prelude,
+                                                               unsigned int new_percentage,
+                                                               unsigned int yellow_percentage,
+                                                               const char inside_braces_right[1024]) {
+  draw_percentage_meter_legacy(win, prelude, new_percentage, inside_braces_right);
   if (yellow_percentage > new_percentage)
     yellow_percentage = new_percentage;
+  if (yellow_percentage > 100)
+    yellow_percentage = 100;
   int rows, cols;
   getmaxyx(win, rows, cols);
   (void)rows;
   size_t size_prelude = strlen(prelude);
-  int between_sbraces = cols - size_prelude - 2;
+  int between_sbraces = cols - (int)size_prelude - 2;
+  if (between_sbraces < 0)
+    between_sbraces = 0;
   float usage = round((float)between_sbraces * yellow_percentage / 100.f);
-  mvwchgat(win, 0, size_prelude + 1, (int)usage, 0, yellow_color, NULL);
+  mvwchgat(win, 0, (int)size_prelude + 1, (int)usage, 0, yellow_color, NULL);
   wnoutrefresh(win);
+}
+
+static void draw_percentage_meter(WINDOW *win, const char *prelude, unsigned int new_percentage,
+                                  const char value[1024], bool legacy) {
+  if (legacy)
+    draw_percentage_meter_legacy(win, prelude, new_percentage, value);
+  else
+    percentage_meter_draw(win, prelude, new_percentage, false, 0, value);
+}
+
+static void draw_percentage_meter_with_effective_overlay(WINDOW *win, const char *prelude, unsigned int new_percentage,
+                                                         unsigned int effective_percentage, const char value[1024],
+                                                         bool legacy) {
+  if (legacy)
+    draw_percentage_meter_with_yellow_highlight_legacy(win, prelude, new_percentage, effective_percentage, value);
+  else
+    percentage_meter_draw(win, prelude, new_percentage, true, effective_percentage, value);
 }
 
 static const char *memory_prefix[] = {" B", "Ki", "Mi", "Gi", "Ti", "Pi"};
@@ -991,6 +1236,8 @@ static struct gpu_info *get_device_by_id(struct list_head *devices, unsigned id)
 static void draw_devices(struct list_head *devices, struct nvtop_interface *interface) {
   struct gpu_info *device;
   unsigned dev_id = 0;
+  bool legacy_meters = interface->options.meter_style == nvtop_meter_style_legacy || COLORS < 256 ||
+                       COLOR_PAIRS <= bar_track_text_color;
 
   list_for_each_entry(device, devices, list) {
     struct device_window *dev = &interface->devices_win[dev_id];
@@ -1038,31 +1285,32 @@ static void draw_devices(struct list_head *devices, struct nvtop_interface *inte
       unsigned rate =
           GPUINFO_DYNAMIC_FIELD_VALID(&device->dynamic_info, encoder_rate) ? device->dynamic_info.encoder_rate : 0;
       snprintf(buff, 1024, "%u%%", rate);
-      draw_percentage_meter(encode_win, "ENC", rate, buff);
+      draw_percentage_meter(encode_win, "ENC", rate, buff, legacy_meters);
     }
     if (display_decode) {
       unsigned rate =
           GPUINFO_DYNAMIC_FIELD_VALID(&device->dynamic_info, decoder_rate) ? device->dynamic_info.decoder_rate : 0;
       snprintf(buff, 1024, "%u%%", rate);
       if (device->static_info.encode_decode_shared)
-        draw_percentage_meter(decode_win, "ENC/DEC", rate, buff);
+        draw_percentage_meter(decode_win, "ENC/DEC", rate, buff, legacy_meters);
       else
-        draw_percentage_meter(decode_win, "DEC", rate, buff);
+        draw_percentage_meter(decode_win, "DEC", rate, buff, legacy_meters);
     }
     if (GPUINFO_DYNAMIC_FIELD_VALID(&device->dynamic_info, gpu_util_rate)) {
       if (GPUINFO_DYNAMIC_FIELD_VALID(&device->dynamic_info, effective_load_rate)) {
         snprintf(buff, 1024, "%u%%(eff %u%%)", device->dynamic_info.gpu_util_rate,
                  device->dynamic_info.effective_load_rate);
-        draw_percentage_meter_with_yellow_highlight(gpu_util_win, DEVICE_UNIT_NAME(device),
-                                                    device->dynamic_info.gpu_util_rate,
-                                                    device->dynamic_info.effective_load_rate, buff);
+        draw_percentage_meter_with_effective_overlay(gpu_util_win, DEVICE_UNIT_NAME(device),
+                                                     device->dynamic_info.gpu_util_rate,
+                                                     device->dynamic_info.effective_load_rate, buff, legacy_meters);
       } else {
         snprintf(buff, 1024, "%u%%", device->dynamic_info.gpu_util_rate);
-        draw_percentage_meter(gpu_util_win, DEVICE_UNIT_NAME(device), device->dynamic_info.gpu_util_rate, buff);
+        draw_percentage_meter(gpu_util_win, DEVICE_UNIT_NAME(device), device->dynamic_info.gpu_util_rate, buff,
+                              legacy_meters);
       }
     } else {
       snprintf(buff, 1024, "N/A");
-      draw_percentage_meter(gpu_util_win, DEVICE_UNIT_NAME(device), 0, buff);
+      draw_percentage_meter(gpu_util_win, DEVICE_UNIT_NAME(device), 0, buff, legacy_meters);
     }
 
     struct gpuinfo_memory_display memory_info =
@@ -1079,7 +1327,9 @@ static void draw_devices(struct list_head *devices, struct nvtop_interface *inte
       }
       snprintf(buff, 1024, "%.3f%s/%.3f%s", used_prefixed, memory_prefix[prefix_off], total_prefixed,
                memory_prefix[prefix_off]);
-      draw_percentage_meter(mem_util_win, memory_label, total_mem > 0 ? (unsigned int)(100. * used_mem / total_mem) : 0, buff);
+      draw_percentage_meter(mem_util_win, memory_label,
+                            total_mem > 0 ? (unsigned int)(100. * used_mem / total_mem) : 0, buff,
+                            legacy_meters);
     } else if (memory_info.total_memory_valid) {
       double total_mem = memory_info.total_memory;
       double total_prefixed = total_mem;
@@ -1088,10 +1338,10 @@ static void draw_devices(struct list_head *devices, struct nvtop_interface *inte
         total_prefixed /= 1024.;
       }
       snprintf(buff, 1024, "N/A/%.3f%s", total_prefixed, memory_prefix[prefix_off]);
-      draw_percentage_meter(mem_util_win, memory_label, 0, buff);
+      draw_percentage_meter(mem_util_win, memory_label, 0, buff, legacy_meters);
     } else {
       snprintf(buff, 1024, "N/A");
-      draw_percentage_meter(mem_util_win, memory_label, 0, buff);
+      draw_percentage_meter(mem_util_win, memory_label, 0, buff, legacy_meters);
     }
     if (GPUINFO_DYNAMIC_FIELD_VALID(&device->dynamic_info, gpu_temp)) {
       if (!GPUINFO_STATIC_FIELD_VALID(&device->static_info, temperature_slowdown_threshold))

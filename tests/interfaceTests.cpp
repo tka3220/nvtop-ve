@@ -321,15 +321,18 @@ TEST(InterfaceOptions, DynamicMemoryUnitsConfig) {
   options.process_fields_displayed = process_default_displayed_field();
   options.dynamic_memory_units = true;
   options.plot_style = nvtop_plot_style_line;
+  options.meter_style = nvtop_meter_style_legacy;
   options.plot_double_resolution = true;
 
   ASSERT_TRUE(save_interface_options_to_config_file(0, &options));
   options.dynamic_memory_units = false;
   options.plot_style = nvtop_plot_style_braille;
+  options.meter_style = nvtop_meter_style_graphical;
   options.plot_double_resolution = false;
   ASSERT_TRUE(load_interface_options_from_config_file(0, &options));
   EXPECT_TRUE(options.dynamic_memory_units);
   EXPECT_EQ(options.plot_style, nvtop_plot_style_line);
+  EXPECT_EQ(options.meter_style, nvtop_meter_style_legacy);
   EXPECT_TRUE(options.plot_double_resolution);
 
   EXPECT_EQ(std::remove(config_path), 0);
@@ -354,6 +357,27 @@ TEST(InterfaceOptions, InvalidGraphStyleConfigKeepsCurrent) {
   ASSERT_TRUE(load_interface_options_from_config_file(0, &options));
   EXPECT_EQ(options.plot_style, nvtop_plot_style_braille);
   EXPECT_TRUE(options.plot_double_resolution);
+
+  EXPECT_EQ(std::remove(config_path), 0);
+}
+
+TEST(InterfaceOptions, InvalidMeterStyleConfigKeepsCurrent) {
+  char config_path[] = "interface-invalid-meter-XXXXXX";
+  int fd = mkstemp(config_path);
+  ASSERT_NE(fd, -1);
+  close(fd);
+
+  FILE *config = fopen(config_path, "w");
+  ASSERT_NE(config, nullptr);
+  fprintf(config, "[HeaderOption]\nMeterStyle = garbage\n");
+  fclose(config);
+
+  nvtop_interface_option options = {};
+  options.config_file_location = config_path;
+  options.meter_style = nvtop_meter_style_graphical;
+
+  ASSERT_TRUE(load_interface_options_from_config_file(0, &options));
+  EXPECT_EQ(options.meter_style, nvtop_meter_style_graphical);
 
   EXPECT_EQ(std::remove(config_path), 0);
 }

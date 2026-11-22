@@ -81,6 +81,7 @@ static const char helpstring[] = "Available options:\n"
                                  "(default 30s, negative = always on screen)\n"
                                  "  -D --double-plot-resolution : Draw two samples per character column\n"
                                  "  -L --legacy-plot          : Use the legacy ncurses line plot style\n"
+                                 "  -B --legacy-bars          : Use the legacy bracketed utilization bars\n"
                                  "  -h --help                 : Print help and exit\n"
                                  "  -s --snapshot             : Output the current gpu stats without ncurses"
                                  "(useful for scripting)\n"
@@ -119,12 +120,13 @@ static const struct option long_opts[] = {
     {.name = "reverse-abs", .has_arg = no_argument, .flag = NULL, .val = 'r'},
     {.name = "double-plot-resolution", .has_arg = no_argument, .flag = NULL, .val = 'D'},
     {.name = "legacy-plot", .has_arg = no_argument, .flag = NULL, .val = 'L'},
+    {.name = "legacy-bars", .has_arg = no_argument, .flag = NULL, .val = 'B'},
     {.name = "snapshot", .has_arg = no_argument, .flag = NULL, .val = 's'},
     {.name = "loop", .has_arg = no_argument, .flag = NULL, .val = 'l'},
     {0, 0, 0, 0},
 };
 
-static const char opts[] = "hvd:c:CfE:pPrislXuMDL";
+static const char opts[] = "hvd:c:CfE:pPrislXuMDLB";
 
 int main(int argc, char **argv) {
   (void)setlocale(LC_CTYPE, "");
@@ -140,6 +142,7 @@ int main(int argc, char **argv) {
   bool reverse_plot_direction_option = false;
   bool double_plot_resolution_option = false;
   bool legacy_plot_option = false;
+  bool legacy_bars_option = false;
   bool encode_decode_timer_option_set = false;
   bool show_gpu_info_bar = false;
   bool show_all_info_bar = false;
@@ -220,6 +223,9 @@ int main(int argc, char **argv) {
       break;
     case 'L':
       legacy_plot_option = true;
+      break;
+    case 'B':
+      legacy_bars_option = true;
       break;
     case 's':
       show_snapshot = true;
@@ -357,6 +363,8 @@ int main(int argc, char **argv) {
     allDevicesOptions.plot_double_resolution = true;
   if (legacy_plot_option)
     allDevicesOptions.plot_style = nvtop_plot_style_line;
+  if (legacy_bars_option)
+    allDevicesOptions.meter_style = nvtop_meter_style_legacy;
   if (use_fahrenheit_option)
     allDevicesOptions.temperature_in_fahrenheit = true;
   if (update_interval_option_set)

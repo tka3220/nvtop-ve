@@ -57,6 +57,19 @@ enum interface_color {
   gpu_mem_plot_color,
   gpu_plot_color_3,
   gpu_plot_color_4,
+  bar_green_color,
+  bar_yellow_color,
+  bar_red_color,
+  bar_effective_fill_color,
+  bar_effective_green_color,
+  bar_effective_yellow_color,
+  bar_effective_red_color,
+  bar_value_green_color,
+  bar_value_yellow_color,
+  bar_value_red_color,
+  bar_value_cyan_color,
+  bar_track_color,
+  bar_track_text_color,
 };
 
 struct device_window {

@@ -327,6 +327,14 @@ bool nvtop_plot_supports_braille(void) {
 #endif
 }
 
+bool nvtop_plot_supports_unicode_blocks(void) {
+#if defined(NCURSES_WIDECHAR) && NCURSES_WIDECHAR
+  return MB_CUR_MAX > 1 && locale_encodes_utf8() && wcwidth((wchar_t)0x258F) > 0;
+#else
+  return false;
+#endif
+}
+
 void nvtop_line_plot(WINDOW *win, size_t num_samples, const double *data, unsigned num_lines,
                      enum nvtop_plot_style style, bool legend_left,
                      char legend[MAX_LINES_PER_PLOT][PLOT_MAX_LEGEND_SIZE]) {

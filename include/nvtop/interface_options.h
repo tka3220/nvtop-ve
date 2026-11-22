@@ -59,6 +59,7 @@ typedef struct nvtop_interface_option_struct {
   bool dynamic_memory_units;                        // Scale process memory units automatically
   unsigned char gpu_plot_color_idx[MAX_LINES_PER_PLOT]; // index into plot_color_names[] per plot slot
   enum nvtop_plot_style plot_style;                 // How the graph lines are rendered
+  enum nvtop_meter_style meter_style;               // How the utilization meters are rendered
   bool plot_double_resolution;                      // Draw two samples per character column
 } nvtop_interface_option;
 

@@ -55,6 +55,14 @@ enum nvtop_plot_style {
   nvtop_plot_style_count,
 };
 
+// How the utilization meters are rendered. Graphical uses the colored track and
+// sub-cell blocks; legacy uses the original bracketed pipe characters.
+enum nvtop_meter_style {
+  nvtop_meter_style_graphical = 0,
+  nvtop_meter_style_legacy,
+  nvtop_meter_style_count,
+};
+
 // Helper macro to stringify an integer
 #define QUOTE(x) #x
 #define EXPAND_AND_QUOTE(x) QUOTE(x)

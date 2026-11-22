@@ -42,6 +42,10 @@ void nvtop_line_plot(WINDOW *win, size_t num_samples, const double *data, unsign
 // Whether the current build and locale can display Unicode braille patterns.
 bool nvtop_plot_supports_braille(void);
 
+// Whether the current build and locale can display Unicode block elements
+// (used for sub-column bar precision).
+bool nvtop_plot_supports_unicode_blocks(void);
+
 void draw_rectangle(WINDOW *win, unsigned startX, unsigned startY, unsigned sizeX, unsigned sizeY);
 
 #endif // __PLOT_H_

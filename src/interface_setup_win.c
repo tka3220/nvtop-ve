@@ -60,6 +60,7 @@ enum setup_header_options {
   setup_header_enc_dec_timer,
   setup_header_gpu_info_bar,
   setup_header_all_info_bar,
+  setup_header_meter_style,
   setup_header_options_count
 };
 
@@ -68,7 +69,8 @@ static const char *setup_header_system_memory_all_description =
 
 static const char *setup_header_option_descriptions[setup_header_options_count] = {
     "Temperature in fahrenheit", "Keep displaying Encoder/Decoder rate (after reaching an idle state)",
-    "Display dynamic GPU info (clock domains, NVLink errors)", "Display static GPU info and secondary clock domains"};
+    "Display dynamic GPU info (clock domains, NVLink errors)", "Display static GPU info and secondary clock domains",
+    "Graphical utilization bars (falls back on low-color terminals)"};
 
 // Chart Options
 
@@ -363,6 +365,18 @@ static void draw_setup_window_header(struct nvtop_interface *interface) {
   if (interface->setup_win.indentation_level == 1 &&
       interface->setup_win.options_selected[0] == setup_header_all_info_bar) {
     mvwchgat(options_win, setup_header_all_info_bar + 1, 0, 3, A_STANDOUT, cyan_color, NULL);
+  }
+
+  // Graphical utilization bars
+  if (interface->options.meter_style == nvtop_meter_style_graphical)
+    option_state = COLORS < 256 ? option_partially_active : option_on;
+  else
+    option_state = option_off;
+  mvwprintw(options_win, setup_header_meter_style + 1, 0, "[%c] %s", option_state_char(option_state),
+            setup_header_option_descriptions[setup_header_meter_style]);
+  if (interface->setup_win.indentation_level == 1 &&
+      interface->setup_win.options_selected[0] == setup_header_meter_style) {
+    mvwchgat(options_win, setup_header_meter_style + 1, 0, 3, A_STANDOUT, cyan_color, NULL);
   }
 
   // System RAM instead of the GPU memory, for every device sharing it. The
@@ -921,6 +935,11 @@ void handle_setup_win_keypress(int keyId, struct nvtop_interface *interface) {
           }
           if (interface->setup_win.options_selected[0] == setup_header_all_info_bar) {
             interface->options.has_all_info_bar = !interface->options.has_all_info_bar;
+          }
+          if (interface->setup_win.options_selected[0] == setup_header_meter_style) {
+            interface->options.meter_style = interface->options.meter_style == nvtop_meter_style_graphical
+                                                 ? nvtop_meter_style_legacy
+                                                 : nvtop_meter_style_graphical;
           }
           if (shared_memory_device_count(interface) > 0 &&
               interface->setup_win.options_selected[0] == setup_header_options_count) {
