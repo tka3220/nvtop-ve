@@ -35,14 +35,19 @@
 
 static const short plot_line_colors[MAX_LINES_PER_PLOT] = {7, 8, 9, 10};
 
+// Plot values are percentages (callers already scale every series to 0..100).
+// Non-finite samples map to 0 and the rest is clamped, so both renderers place
+// any sample the same way.
+static inline double plot_clamp_percentage(double value) {
+  if (!isfinite(value) || value < 0.)
+    return 0.;
+  if (value > 100.)
+    return 100.;
+  return value;
+}
+
 static inline int data_level(double rows, double data, double increment) {
-  if (!isfinite(data))
-    data = 0.;
-  if (data < 0.)
-    data = 0.;
-  if (data > 100.)
-    data = 100.;
-  return (int)(rows - round(data / increment));
+  return (int)(rows - round(plot_clamp_percentage(data) / increment));
 }
 
 static void draw_plot_legend(WINDOW *win, int rows, int cols, unsigned num_lines, bool legend_left,
@@ -190,13 +195,8 @@ static bool terminal_supports_braille(void) {
   return MB_CUR_MAX > 1 && locale_encodes_utf8() && wcwidth((wchar_t)(BRAILLE_BASE + 0xFF)) > 0;
 }
 
-// Plot values are percentages in the [0, 100] range.
 static unsigned plot_value_to_dot_row(double value, unsigned dot_rows) {
-  if (value < 0.)
-    value = 0.;
-  if (value > 100.)
-    value = 100.;
-  double row = (100. - value) * (double)(dot_rows - 1) / 100.;
+  double row = (100. - plot_clamp_percentage(value)) * (double)(dot_rows - 1) / 100.;
   return (unsigned)llround(row);
 }
 
@@ -259,6 +259,24 @@ static unsigned braille_top_row(uint8_t mask) {
   return 3;
 }
 
+// Per-line dot masks reused across frames. The buffer only grows, so the steady
+// state does no allocation; it is cleared before each use. The interface is
+// single threaded, so one shared buffer is enough.
+static uint8_t *braille_scratch = NULL;
+static size_t braille_scratch_capacity = 0;
+
+static uint8_t *braille_scratch_masks(size_t size) {
+  if (size > braille_scratch_capacity) {
+    uint8_t *grown = realloc(braille_scratch, size);
+    if (!grown)
+      return NULL;
+    braille_scratch = grown;
+    braille_scratch_capacity = size;
+  }
+  memset(braille_scratch, 0, size);
+  return braille_scratch;
+}
+
 // Draw the plot using Unicode braille patterns. Each character cell provides a
 // 2x4 dot matrix, i.e. eight times more detail than a regular character.
 static bool nvtop_line_plot_braille(WINDOW *win, size_t num_samples, const double *data, unsigned num_lines, int rows,
@@ -267,7 +285,7 @@ static bool nvtop_line_plot_braille(WINDOW *win, size_t num_samples, const doubl
     return true;
 
   size_t cell_count = (size_t)rows * (size_t)cols;
-  uint8_t *masks = calloc((size_t)num_lines * cell_count, sizeof(*masks));
+  uint8_t *masks = braille_scratch_masks((size_t)num_lines * cell_count);
   if (!masks)
     return false;
 
@@ -324,15 +342,19 @@ static bool nvtop_line_plot_braille(WINDOW *win, size_t num_samples, const doubl
     }
   }
 
-  free(masks);
   return true;
 }
 
 #endif // NCURSES_WIDECHAR
 
+// The locale is set once at startup (before any drawing), so the capability
+// checks are computed on first use and cached.
 bool nvtop_plot_supports_braille(void) {
 #if defined(NCURSES_WIDECHAR) && NCURSES_WIDECHAR
-  return terminal_supports_braille();
+  static int supported = -1;
+  if (supported < 0)
+    supported = terminal_supports_braille();
+  return supported;
 #else
   return false;
 #endif
@@ -340,18 +362,42 @@ bool nvtop_plot_supports_braille(void) {
 
 bool nvtop_plot_supports_unicode_blocks(void) {
 #if defined(NCURSES_WIDECHAR) && NCURSES_WIDECHAR
-  return MB_CUR_MAX > 1 && locale_encodes_utf8() && wcwidth((wchar_t)0x258F) > 0;
+  static int supported = -1;
+  if (supported < 0)
+    supported = MB_CUR_MAX > 1 && locale_encodes_utf8() && wcwidth((wchar_t)0x258F) > 0;
+  return supported;
+#else
+  return false;
+#endif
+}
+
+void nvtop_plot_free_resources(void) {
+#if defined(NCURSES_WIDECHAR) && NCURSES_WIDECHAR
+  free(braille_scratch);
+  braille_scratch = NULL;
+  braille_scratch_capacity = 0;
+#endif
+}
+
+bool nvtop_plot_supports_middle_dot(void) {
+#if defined(NCURSES_WIDECHAR) && NCURSES_WIDECHAR
+  static int supported = -1;
+  if (supported < 0)
+    supported = nvtop_plot_supports_unicode_blocks() && wcwidth((wchar_t)0x00B7) == 1;
+  return supported;
 #else
   return false;
 #endif
 }
 
 void nvtop_line_plot(WINDOW *win, size_t num_samples, const double *data, unsigned num_lines,
-                     enum nvtop_plot_style style, bool legend_left, bool newest_left,
+                     enum nvtop_plot_style style, bool newest_left,
                      char legend[MAX_LINES_PER_PLOT][PLOT_MAX_LEGEND_SIZE]) {
   if (num_samples == 0 || num_lines == 0 || num_lines > MAX_LINES_PER_PLOT)
     return;
-  (void)style;
+#if !defined(NCURSES_WIDECHAR) || !NCURSES_WIDECHAR
+  (void)style; // Only the braille renderer, which needs wide characters, uses it.
+#endif
   int rows, cols;
   getmaxyx(win, rows, cols);
   if (rows <= 0 || cols <= 0)
@@ -360,7 +406,7 @@ void nvtop_line_plot(WINDOW *win, size_t num_samples, const double *data, unsign
   bool plotted = false;
   bool braille_layout = false;
 #if defined(NCURSES_WIDECHAR) && NCURSES_WIDECHAR
-  if (style == nvtop_plot_style_braille && terminal_supports_braille()) {
+  if (style == nvtop_plot_style_braille && nvtop_plot_supports_braille()) {
     braille_layout = true;
     plotted = nvtop_line_plot_braille(win, num_samples, data, num_lines, rows, cols);
   }
@@ -369,7 +415,8 @@ void nvtop_line_plot(WINDOW *win, size_t num_samples, const double *data, unsign
     nvtop_line_plot_line(win, num_samples, data, num_lines, braille_layout, newest_left);
   }
 
-  draw_plot_legend(win, rows, cols, num_lines, legend_left, legend);
+  // The legend sits on the side of the oldest data.
+  draw_plot_legend(win, rows, cols, num_lines, !newest_left, legend);
 }
 
 void draw_rectangle(WINDOW *win, unsigned startX, unsigned startY, unsigned sizeX, unsigned sizeY) {

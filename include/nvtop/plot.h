@@ -36,7 +36,7 @@
 #define PLOT_MAX_SAMPLES_PER_COLUMN 2
 
 void nvtop_line_plot(WINDOW *win, size_t num_samples, const double *data, unsigned num_lines,
-                     enum nvtop_plot_style style, bool legend_left, bool newest_left,
+                     enum nvtop_plot_style style, bool newest_left,
                      char legend[MAX_LINES_PER_PLOT][PLOT_MAX_LEGEND_SIZE]);
 
 // Whether the current build and locale can display Unicode braille patterns.
@@ -45,6 +45,13 @@ bool nvtop_plot_supports_braille(void);
 // Whether the current build and locale can display Unicode block elements
 // (used for sub-column bar precision).
 bool nvtop_plot_supports_unicode_blocks(void);
+
+// Whether the middle dot (U+00B7) used for the meter track is a single-column
+// printable character in the current locale.
+bool nvtop_plot_supports_middle_dot(void);
+
+// Release the buffers the plot renderers keep between frames.
+void nvtop_plot_free_resources(void);
 
 void draw_rectangle(WINDOW *win, unsigned startX, unsigned startY, unsigned sizeX, unsigned sizeY);
 

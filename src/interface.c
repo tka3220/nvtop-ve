@@ -389,14 +389,18 @@ static void initialize_gpu_mem_plot(struct plot_window *plot, struct window_posi
     unsigned dev_id = plot->devices_ids[i];
     column_divisor += plot_count_draw_info(options->gpu_specific_opts[dev_id].to_draw);
   }
-  if (column_divisor == 0)
-    column_divisor = 1;
+  // The layout never creates a plot without metrics.
+  assert(column_divisor > 0);
 
   bool braille_plot = options->plot_style == nvtop_plot_style_braille && nvtop_plot_supports_braille();
   size_t samples_per_line;
+  // Number of updates the time axis covers. In line mode the final group may be
+  // clipped, so only count the groups that fit entirely.
+  unsigned long long axis_samples;
   if (braille_plot) {
     unsigned samples_per_column = options->plot_double_resolution ? PLOT_MAX_SAMPLES_PER_COLUMN : 1;
     samples_per_line = (size_t)cols * samples_per_column;
+    axis_samples = samples_per_line;
   } else {
     // The legacy renderer advances one column per metric per update, so the
     // plot width is shared between the metrics displayed in this plot. Round
@@ -405,6 +409,7 @@ static void initialize_gpu_mem_plot(struct plot_window *plot, struct window_posi
     samples_per_line = (cols + column_divisor - 1) / column_divisor;
     if (samples_per_line == 0)
       samples_per_line = 1;
+    axis_samples = cols / column_divisor;
   }
   plot->num_samples = samples_per_line;
   // Allocate for the widest mode so the buffer stays valid if the number of
@@ -417,10 +422,11 @@ static void initialize_gpu_mem_plot(struct plot_window *plot, struct window_posi
     exit(EXIT_FAILURE);
   }
 
-  int total_seconds = (int)((unsigned long long)options->update_interval * plot->num_samples / 1000);
-  int quarter_seconds = (int)((unsigned long long)options->update_interval * plot->num_samples / 4 / 1000);
-  int half_seconds = (int)((unsigned long long)options->update_interval * plot->num_samples / 2 / 1000);
-  int three_quarter_seconds = (int)((unsigned long long)options->update_interval * plot->num_samples * 3 / 4 / 1000);
+  unsigned long long axis_ms = (unsigned long long)options->update_interval * axis_samples;
+  int total_seconds = (int)(axis_ms / 1000);
+  int quarter_seconds = (int)(axis_ms / 4 / 1000);
+  int half_seconds = (int)(axis_ms / 2 / 1000);
+  int three_quarter_seconds = (int)(axis_ms * 3 / 4 / 1000);
 
   char elapsedSeconds[16];
   char *err = "err";
@@ -678,6 +684,7 @@ void clean_ncurses(struct nvtop_interface *interface) {
   free(interface->options.config_file_location);
   free(interface->devices_win);
   interface_free_ring_buffer(&interface->saved_data_ring);
+  nvtop_plot_free_resources();
   free(interface);
 }
 
@@ -689,7 +696,6 @@ static short percentage_meter_color(unsigned int percentage) {
   return bar_green_color;
 }
 
-#if defined(NCURSES_WIDECHAR) && NCURSES_WIDECHAR
 static short percentage_meter_effective_block_color(short fill_color) {
   if (fill_color == bar_red_color)
     return bar_effective_red_color;
@@ -697,17 +703,72 @@ static short percentage_meter_effective_block_color(short fill_color) {
     return bar_effective_yellow_color;
   return bar_effective_green_color;
 }
-#endif
 
-// Number of character cells the bar covers for text-background purposes. A
-// partially filled cell rounds up so a glyph is never split between the bar
-// and the track.
-static unsigned percentage_meter_cells(unsigned int percentage, int bar_width) {
+// Extent of a meter fill, computed with 1/8-cell precision. With Unicode block
+// elements the remainder is drawn as a partial block glyph in cell `full`;
+// without them it is rounded to the nearest whole cell. The painter and the
+// value text both use this, so they always agree on where the fill ends.
+struct percentage_meter_fill {
+  unsigned full;    // Cells painted solid
+  unsigned partial; // Eighths (1..7) of the partial block glyph, 0 when none
+};
+
+static struct percentage_meter_fill percentage_meter_fill(unsigned int percentage, int bar_width,
+                                                          bool unicode_blocks) {
+  struct percentage_meter_fill fill = {0, 0};
+  if (bar_width <= 0)
+    return fill;
+  if (percentage > 100)
+    percentage = 100;
   unsigned total_eighths = (unsigned)bar_width * percentage * 8u / 100u;
-  unsigned cells = total_eighths / 8u + (total_eighths % 8u != 0);
-  if (cells > (unsigned)bar_width)
-    cells = (unsigned)bar_width;
-  return cells;
+  fill.full = total_eighths / 8u;
+  unsigned eighth = total_eighths % 8u;
+  if (fill.full >= (unsigned)bar_width) {
+    fill.full = (unsigned)bar_width;
+    return fill;
+  }
+  if (unicode_blocks)
+    fill.partial = eighth;
+  else if (eighth >= 4)
+    fill.full += 1;
+  return fill;
+}
+
+// Number of character cells the fill touches. The value text uses the fill
+// background on all of them; a cell holding a partial glyph counts as filled
+// because the text glyph replaces it.
+static unsigned percentage_meter_fill_cells(struct percentage_meter_fill fill) {
+  return fill.full + (fill.partial != 0);
+}
+
+// Paint a fill: solid reversed cells in full_color, then the partial block
+// glyph (if any) in partial_color.
+static void percentage_meter_paint_fill(WINDOW *win, int row, int col, struct percentage_meter_fill fill,
+                                        short full_color, short partial_color) {
+  if (fill.full > 0) {
+    // Replace the dim track dots with blank cells before painting the fill.
+    mvwhline(win, row, col, ' ', (int)fill.full);
+    mvwchgat(win, row, col, (int)fill.full, A_REVERSE, full_color, NULL);
+  }
+#if defined(NCURSES_WIDECHAR) && NCURSES_WIDECHAR
+  if (fill.partial > 0) {
+    wchar_t glyph[2] = {(wchar_t)(0x2590u - fill.partial), L'\0'};
+    wcolor_set(win, partial_color, NULL);
+    mvwaddnwstr(win, row, col + (int)fill.full, glyph, 1);
+    wstandend(win);
+  }
+#else
+  (void)partial_color;
+#endif
+}
+
+// Width of a meter bar, which is also the room available for its value text.
+// The bar follows the prelude and one separator (' ' or '['); the legacy meter
+// also reserves the closing ']'. Every meter derives its geometry from this so
+// the drawn bar and the callers choosing a value format always agree.
+static int percentage_meter_bar_width(WINDOW *win, const char *prelude, bool legacy) {
+  int width = getmaxx(win) - (int)strlen(prelude) - (legacy ? 2 : 1);
+  return width < 0 ? 0 : width;
 }
 
 struct percentage_meter_layout {
@@ -718,11 +779,9 @@ struct percentage_meter_layout {
 
 // Geometry after the prelude has been printed: the bar starts at the cursor,
 // and the right-aligned value consumes at most the whole bar width.
-static struct percentage_meter_layout percentage_meter_layout(WINDOW *win, const char *value) {
+static struct percentage_meter_layout percentage_meter_layout(WINDOW *win, const char *prelude, const char *value) {
   int curx = getcurx(win);
-  int bar_width = getmaxx(win) - curx;
-  if (bar_width < 0)
-    bar_width = 0;
+  int bar_width = percentage_meter_bar_width(win, prelude, false);
   int value_space = (int)strlen(value);
   if (value_space > bar_width)
     value_space = bar_width;
@@ -731,12 +790,15 @@ static struct percentage_meter_layout percentage_meter_layout(WINDOW *win, const
 
 // Draw the meter extent as dim centered dots in the terminal's default
 // foreground. A single dot per cell leaves the 1/8-block fill untouched.
-static void percentage_meter_draw_track(WINDOW *win, int row, int col, int width) {
+static void percentage_meter_draw_track(WINDOW *win, int row, int col, int width, bool unicode_blocks) {
+#if !defined(NCURSES_WIDECHAR) || !NCURSES_WIDECHAR
+  (void)unicode_blocks;
+#endif
   if (width <= 0)
     return;
   wattron(win, A_DIM);
 #if defined(NCURSES_WIDECHAR) && NCURSES_WIDECHAR
-  if (nvtop_plot_supports_unicode_blocks() && wcwidth((wchar_t)L'·') == 1) {
+  if (unicode_blocks && nvtop_plot_supports_middle_dot()) {
     wchar_t dot[2] = {L'·', L'\0'};
     for (int i = 0; i < width; ++i)
       mvwaddnwstr(win, row, col + i, dot, 1);
@@ -749,85 +811,10 @@ static void percentage_meter_draw_track(WINDOW *win, int row, int col, int width
   wstandend(win);
 }
 
-// Draw a filled bar with 1/8-cell precision when Unicode block elements are
-// available, and full-cell precision otherwise.
-static void percentage_meter_draw_bar(WINDOW *win, int row, int col, int bar_width, unsigned int percentage,
-                                      short color, bool unicode_blocks) {
-#if !defined(NCURSES_WIDECHAR) || !NCURSES_WIDECHAR
-  (void)unicode_blocks;
-#endif
-  if (bar_width <= 0)
-    return;
-  if (percentage > 100)
-    percentage = 100;
-  unsigned total_eighths = (unsigned)bar_width * percentage * 8u / 100u;
-  unsigned whole = total_eighths / 8u;
-  unsigned eighth = total_eighths % 8u;
-  if (whole > (unsigned)bar_width)
-    whole = (unsigned)bar_width;
-  if (whole > 0) {
-    // Replace the dim track dots with blank cells before painting the fill.
-    mvwhline(win, row, col, ' ', (int)whole);
-    mvwchgat(win, row, col, (int)whole, A_REVERSE, color, NULL);
-  }
-  if (eighth > 0 && whole < (unsigned)bar_width) {
-#if defined(NCURSES_WIDECHAR) && NCURSES_WIDECHAR
-    if (unicode_blocks) {
-      wchar_t glyph[2] = {(wchar_t)(0x2590u - eighth), L'\0'};
-      wcolor_set(win, color, NULL);
-      mvwaddnwstr(win, row, col + (int)whole, glyph, 1);
-      wstandend(win);
-      return;
-    }
-#endif
-    // Without Unicode block elements, round the partial cell to the nearest
-    // character column.
-    if (eighth >= 4)
-      mvwchgat(win, row, col + (int)whole, 1, A_REVERSE, color, NULL);
-  }
-}
-
-// Overlay the effective-load portion in cyan, starting at 0. When effective
-// load equals total utilization the whole bar becomes cyan.
-static void percentage_meter_draw_effective(WINDOW *win, int row, int col, int bar_width,
-                                            unsigned int effective_percentage, unsigned int util_percentage,
-                                            short base_fill_color) {
-  (void)util_percentage;
-  (void)base_fill_color;
-  unsigned total_eighths = (unsigned)bar_width * effective_percentage * 8u / 100u;
-  unsigned whole = total_eighths / 8u;
-  unsigned eighth = total_eighths % 8u;
-  if (whole > (unsigned)bar_width)
-    whole = (unsigned)bar_width;
-  if (whole > 0)
-    mvwchgat(win, row, col, (int)whole, A_REVERSE, bar_effective_fill_color, NULL);
-  if (eighth > 0 && whole < (unsigned)bar_width) {
-    bool drew_unicode = false;
-#if defined(NCURSES_WIDECHAR) && NCURSES_WIDECHAR
-    if (nvtop_plot_supports_unicode_blocks()) {
-      // A cell has one background: when the effective and utilization
-      // boundaries share a cell, the cyan block is drawn over the utilization
-      // color, rounding that utilization edge up to the cell boundary.
-      short block_color = effective_percentage == util_percentage
-                              ? bar_effective_fill_color
-                              : percentage_meter_effective_block_color(base_fill_color);
-      wchar_t glyph[2] = {(wchar_t)(0x2590u - eighth), L'\0'};
-      wcolor_set(win, block_color, NULL);
-      mvwaddnwstr(win, row, col + (int)whole, glyph, 1);
-      wstandend(win);
-      drew_unicode = true;
-    }
-#endif
-    if (!drew_unicode && eighth >= 4)
-      mvwchgat(win, row, col + (int)whole, 1, A_REVERSE, bar_effective_fill_color, NULL);
-  }
-}
-
 // Draw the right-aligned value. Each glyph keeps the underlying bar/track color
 // as its background and uses a contrasting foreground, so the bar remains
-// visible behind the text. A partially covered cell is rounded up to a full
-// character before choosing the background, so one glyph never straddles the
-// boundary.
+// visible behind the text. The filled cells come from percentage_meter_fill, so
+// the text background ends exactly where the painted bar does.
 static void percentage_meter_draw_value(WINDOW *win, int row, int col, int bar_width, int value_space,
                                         unsigned util_cells, unsigned effective_cells, unsigned util_percentage,
                                         const char value[1024]) {
@@ -866,37 +853,41 @@ static void percentage_meter_draw(WINDOW *win, const char *prelude, unsigned int
   wstandend(win);
   waddch(win, ' ');
 
-  struct percentage_meter_layout layout = percentage_meter_layout(win, value);
-  percentage_meter_draw_track(win, 0, layout.curx, layout.bar_width);
+  bool unicode_blocks = nvtop_plot_supports_unicode_blocks();
+  struct percentage_meter_layout layout = percentage_meter_layout(win, prelude, value);
+  percentage_meter_draw_track(win, 0, layout.curx, layout.bar_width, unicode_blocks);
 
   short base_fill_color = percentage_meter_color(util_percentage);
-  percentage_meter_draw_bar(win, 0, layout.curx, layout.bar_width, util_percentage, base_fill_color,
-                            nvtop_plot_supports_unicode_blocks());
+  struct percentage_meter_fill util_fill = percentage_meter_fill(util_percentage, layout.bar_width, unicode_blocks);
+  percentage_meter_paint_fill(win, 0, layout.curx, util_fill, base_fill_color, base_fill_color);
 
+  // Overlay the effective-load portion in cyan, starting at 0. When effective
+  // load equals total utilization the whole bar becomes cyan.
+  struct percentage_meter_fill effective_fill = {0, 0};
   if (draw_effective) {
     if (effective_percentage > util_percentage)
       effective_percentage = util_percentage;
-    if (effective_percentage > 0)
-      percentage_meter_draw_effective(win, 0, layout.curx, layout.bar_width, effective_percentage, util_percentage,
-                                      base_fill_color);
+    if (effective_percentage > 0) {
+      effective_fill = percentage_meter_fill(effective_percentage, layout.bar_width, unicode_blocks);
+      // A cell has one background: when the effective and utilization
+      // boundaries share a cell, the cyan block is drawn over the utilization
+      // color, rounding that utilization edge up to the cell boundary.
+      short partial_color = effective_percentage == util_percentage
+                                ? bar_effective_fill_color
+                                : percentage_meter_effective_block_color(base_fill_color);
+      percentage_meter_paint_fill(win, 0, layout.curx, effective_fill, bar_effective_fill_color, partial_color);
+    }
   }
 
-  unsigned util_cells = percentage_meter_cells(util_percentage, layout.bar_width);
-  unsigned effective_cells = draw_effective && effective_percentage > 0
-                                 ? percentage_meter_cells(effective_percentage, layout.bar_width)
-                                 : 0;
-  percentage_meter_draw_value(win, 0, layout.curx, layout.bar_width, layout.value_space, util_cells,
-                              effective_cells, util_percentage, value);
+  percentage_meter_draw_value(win, 0, layout.curx, layout.bar_width, layout.value_space,
+                              percentage_meter_fill_cells(util_fill), percentage_meter_fill_cells(effective_fill),
+                              util_percentage, value);
   wnoutrefresh(win);
 }
 
 // Legacy bracketed pipe meters from the original interface.
 static void draw_percentage_meter_legacy(WINDOW *win, const char *prelude, unsigned int new_percentage,
                                          const char inside_braces_right[1024]) {
-  int rows, cols;
-  getmaxyx(win, rows, cols);
-  (void)rows;
-  size_t size_prelude = strlen(prelude);
   wcolor_set(win, cyan_color, NULL);
   mvwprintw(win, 0, 0, "%s", prelude);
   wstandend(win);
@@ -904,9 +895,7 @@ static void draw_percentage_meter_legacy(WINDOW *win, const char *prelude, unsig
   int curx, cury;
   curx = getcurx(win);
   cury = getcury(win);
-  int between_sbraces = cols - (int)size_prelude - 2;
-  if (between_sbraces < 0)
-    between_sbraces = 0;
+  int between_sbraces = percentage_meter_bar_width(win, prelude, true);
   if (new_percentage > 100)
     new_percentage = 100;
   float usage = round((float)between_sbraces * new_percentage / 100.f);
@@ -935,13 +924,8 @@ static void draw_percentage_meter_with_yellow_highlight_legacy(WINDOW *win, cons
     yellow_percentage = new_percentage;
   if (yellow_percentage > 100)
     yellow_percentage = 100;
-  int rows, cols;
-  getmaxyx(win, rows, cols);
-  (void)rows;
   size_t size_prelude = strlen(prelude);
-  int between_sbraces = cols - (int)size_prelude - 2;
-  if (between_sbraces < 0)
-    between_sbraces = 0;
+  int between_sbraces = percentage_meter_bar_width(win, prelude, true);
   float usage = round((float)between_sbraces * yellow_percentage / 100.f);
   mvwchgat(win, 0, (int)size_prelude + 1, (int)usage, 0, yellow_color, NULL);
   wnoutrefresh(win);
@@ -1304,7 +1288,7 @@ static void draw_devices(struct list_head *devices, struct nvtop_interface *inte
     }
     if (GPUINFO_DYNAMIC_FIELD_VALID(&device->dynamic_info, gpu_util_rate)) {
       if (GPUINFO_DYNAMIC_FIELD_VALID(&device->dynamic_info, effective_load_rate)) {
-        int value_space = getmaxx(gpu_util_win) - (int)strlen(DEVICE_UNIT_NAME(device)) - (legacy_meters ? 2 : 1);
+        int value_space = percentage_meter_bar_width(gpu_util_win, DEVICE_UNIT_NAME(device), legacy_meters);
         snprintf(buff, 1024, "%u%%(eff %u%%)", device->dynamic_info.gpu_util_rate,
                  device->dynamic_info.effective_load_rate);
         if ((int)strlen(buff) > value_space)
@@ -1334,11 +1318,11 @@ static void draw_devices(struct list_head *devices, struct nvtop_interface *inte
         total_prefixed /= 1024.;
         used_prefixed /= 1024.;
       }
-      if (getmaxx(mem_util_win) < 34)
+      int value_space = percentage_meter_bar_width(mem_util_win, memory_label, legacy_meters);
+      snprintf(buff, 1024, "%.3f%s/%.3f%s", used_prefixed, memory_prefix[prefix_off], total_prefixed,
+               memory_prefix[prefix_off]);
+      if ((int)strlen(buff) > value_space)
         snprintf(buff, 1024, "%.1f%s/%.1f%s", used_prefixed, memory_prefix[prefix_off], total_prefixed,
-                 memory_prefix[prefix_off]);
-      else
-        snprintf(buff, 1024, "%.3f%s/%.3f%s", used_prefixed, memory_prefix[prefix_off], total_prefixed,
                  memory_prefix[prefix_off]);
       draw_percentage_meter(mem_util_win, memory_label,
                             total_mem > 0 ? (unsigned int)(100. * used_mem / total_mem) : 0, buff,
@@ -1350,10 +1334,10 @@ static void draw_devices(struct list_head *devices, struct nvtop_interface *inte
       for (prefix_off = 0; prefix_off < 5 && total_prefixed >= 1000.; ++prefix_off) {
         total_prefixed /= 1024.;
       }
-      if (getmaxx(mem_util_win) < 26)
+      int value_space = percentage_meter_bar_width(mem_util_win, memory_label, legacy_meters);
+      snprintf(buff, 1024, "N/A/%.3f%s", total_prefixed, memory_prefix[prefix_off]);
+      if ((int)strlen(buff) > value_space)
         snprintf(buff, 1024, "N/A/%.1f%s", total_prefixed, memory_prefix[prefix_off]);
-      else
-        snprintf(buff, 1024, "N/A/%.3f%s", total_prefixed, memory_prefix[prefix_off]);
       draw_percentage_meter(mem_util_win, memory_label, 0, buff, legacy_meters);
     } else {
       snprintf(buff, 1024, "N/A");
@@ -2581,8 +2565,6 @@ void save_current_data_to_ring(struct list_head *devices, struct nvtop_interface
 static unsigned populate_plot_data_from_ring_buffer(struct list_head *devices, const struct nvtop_interface *interface,
                                                     struct plot_window *plot_win, double *data,
                                                     char plot_legend[MAX_LINES_PER_PLOT][PLOT_MAX_LEGEND_SIZE]) {
-
-  memset(data, 0, plot_win->num_data * sizeof(*data));
   unsigned total_to_draw = 0;
   for (unsigned i = 0; i < plot_win->num_devices_to_plot; ++i) {
     unsigned dev_id = plot_win->devices_ids[i];
@@ -2592,6 +2574,8 @@ static unsigned populate_plot_data_from_ring_buffer(struct list_head *devices, c
 
   assert(total_to_draw > 0);
   assert(plot_win->num_samples * total_to_draw <= plot_win->num_data);
+  // The renderers only read the first num_samples * total_to_draw values.
+  memset(data, 0, plot_win->num_samples * total_to_draw * sizeof(*data));
   size_t max_data_to_copy = plot_win->num_samples;
   double (*data_split)[total_to_draw] = (double (*)[total_to_draw])data;
 
@@ -2688,7 +2672,7 @@ static void draw_plots(struct list_head *devices, struct nvtop_interface *interf
 
     nvtop_line_plot(interface->plots[plot_id].plot_window, interface->plots[plot_id].num_samples,
                     interface->plots[plot_id].data, num_lines, interface->options.plot_style,
-                    !interface->options.plot_left_to_right, interface->options.plot_left_to_right, plot_legend);
+                    interface->options.plot_left_to_right, plot_legend);
 
     wnoutrefresh(interface->plots[plot_id].plot_window);
   }
