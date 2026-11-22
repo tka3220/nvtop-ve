@@ -169,8 +169,8 @@ struct nvtop_interface {
 };
 
 // Whether the graphical meter style can actually be drawn. It needs colors
-// enabled and enough initialized color pairs; otherwise the legacy meters are
-// used.
+// enabled, a 256-color terminal and enough initialized color pairs; otherwise
+// the legacy meters are used.
 static inline bool interface_supports_graphical_meters(const struct nvtop_interface *interface) {
   return interface->options.meter_style == nvtop_meter_style_graphical && interface->options.use_color &&
          has_colors() && COLORS >= 256 && COLOR_PAIRS > bar_effective_red_color;
