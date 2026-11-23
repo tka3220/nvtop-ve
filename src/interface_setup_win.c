@@ -65,7 +65,7 @@ enum setup_header_options {
 };
 
 static const char *setup_header_system_memory_all_description =
-    "Show system RAM instead of GPU memory (shared-memory GPUs)";
+    "Show system RAM instead of device memory (shared-memory devices)";
 
 static const char *setup_header_option_descriptions[setup_header_options_count] = {
     "Temperature in fahrenheit", "Keep displaying Encoder/Decoder rate (after reaching an idle state)",
@@ -90,7 +90,7 @@ static const char *setup_chart_graph_style_description = "Smooth braille plots (
 static const char *setup_chart_plot_resolution_description = "Double braille plot resolution (2 samples/column)";
 static const char *setup_chart_all_gpu_description  = "Displayed all GPUs";
 static const char *setup_chart_gpu_description      = "Displayed GPU";
-static const char *setup_chart_system_memory_description = "Show system RAM instead of GPU memory";
+static const char *setup_chart_system_memory_description = "Show system RAM instead of device memory";
 
 static const char *setup_chart_gpu_value_descriptions[plot_information_count] = {
     "%s utilization rate",  "%s memory utilization rate",    "%s encoder rate",   "%s decoder rate",
@@ -145,7 +145,7 @@ enum option_state {
 };
 
 // The devices sharing their memory with the host can show the system RAM
-// instead of the GPU memory derived from their processes. The Devices section
+// instead of the device memory derived from their processes. The Devices section
 // always offers to set it for every device; the Chart section of each device
 // sharing its memory offers it for that device.
 static unsigned shared_memory_device_count(const struct nvtop_interface *interface) {
@@ -379,7 +379,7 @@ static void draw_setup_window_header(struct nvtop_interface *interface) {
     mvwchgat(options_win, setup_header_meter_style + 1, 0, 3, A_STANDOUT, cyan_color, NULL);
   }
 
-  // System RAM instead of the GPU memory, for every device sharing it. The
+  // System RAM instead of the device memory, for every device sharing it. The
   // row is only meaningful, and only shown, when a monitored device shares
   // its memory with the host.
   if (has_shared_memory) {
