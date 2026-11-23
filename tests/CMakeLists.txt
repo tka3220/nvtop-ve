@@ -12,6 +12,22 @@ if (BUILD_TESTING AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
   add_test(NAME Fdinfo.sweep COMMAND fdinfoTests)
 endif()
 
+# Braille plot rendering, checked through an off-screen ncurses window. It
+# needs the wide character ncurses API, which the top-level CMakeLists only
+# leaves enabled (CURSES_NEED_WIDE) when ncursesw was found. The test is
+# skipped at run time when the host has no UTF-8 locale.
+if (BUILD_TESTING AND CURSES_NEED_WIDE)
+  add_executable(plotTests plotTests.c ${PROJECT_SOURCE_DIR}/src/plot.c)
+  target_include_directories(plotTests PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_BINARY_DIR}/include)
+  set_property(TARGET plotTests PROPERTY C_STANDARD 11)
+  target_link_libraries(plotTests PRIVATE ncurses m)
+  add_sanitizers(plotTests)
+  # A single test running every case, so a case cannot be left out; failing
+  # cases are named in the output.
+  add_test(NAME Plot COMMAND plotTests)
+  set_tests_properties(Plot PROPERTIES SKIP_RETURN_CODE 77)
+endif()
+
 if (BUILD_TESTING AND ENFLAME_SUPPORT AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
   add_executable(enflameTests
     enflameTests.c

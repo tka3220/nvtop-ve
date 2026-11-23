@@ -26,6 +26,7 @@
 #include "nvtop/extract_gpuinfo_common.h"
 #include "nvtop/interface_options.h"
 #include "nvtop/interface_ring_buffer.h"
+#include "nvtop/plot.h"
 #include "nvtop/time.h"
 
 #include <ncurses.h>
@@ -127,7 +128,7 @@ struct plot_window {
   size_t num_data;
   size_t num_samples; // Samples displayed per line (fixed by the plot width)
   double *data;
-  uint8_t *braille_masks; // Renderer scratch, nvtop_plot_braille_scratch_size(rows, cols) bytes
+  struct nvtop_braille_plot braille; // Braille renderer state, sized for plot_window
   WINDOW *win;
   WINDOW *plot_window;
   unsigned num_devices_to_plot;

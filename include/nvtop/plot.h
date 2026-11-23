@@ -36,15 +36,53 @@
 // horizontal resolution of the renderer without overplotting samples.
 #define PLOT_MAX_SAMPLES_PER_COLUMN 2
 
-// Size in bytes of the scratch buffer nvtop_line_plot needs for a plot window of
-// rows x cols cells: one braille dot mask per cell for every line.
-size_t nvtop_plot_braille_scratch_size(unsigned rows, unsigned cols);
+// Per plot window state of the braille renderer.
+//
+// A braille cell has a single color, so when several lines share a cell the
+// line with the highest dot owns it. Lines tied for the highest dot keep the
+// owner of the previous (older) cell of the same character row, so a shared
+// level keeps one color and the color only changes where the lines cross.
+// The owners the oldest column inherits are kept across frames so they do not
+// change when the cell that started a shared level scrolls out of the graph.
+// With several samples per character column, the frames group the samples in
+// columns in as many different ways; each grouping has its own history.
+struct nvtop_braille_plot {
+  unsigned rows, cols;
+  // Scratch: one dot mask per cell for every line.
+  uint8_t *masks;
+  // Per grouping and character row: owner (line index + 1, 0 for none) the
+  // oldest column inherits in the current frame, and the running owner after
+  // the oldest column, which the second oldest column inherits; that column
+  // is the oldest one a column scroll later. A fresh plot has no history: all
+  // owners start as 0.
+  uint8_t *seed_owner[PLOT_MAX_SAMPLES_PER_COLUMN];
+  uint8_t *next_seed[PLOT_MAX_SAMPLES_PER_COLUMN];
+  // Scroll count seed_owner is valid for and next_seed was recorded at.
+  unsigned long long seed_scroll[PLOT_MAX_SAMPLES_PER_COLUMN];
+  unsigned long long next_seed_scroll[PLOT_MAX_SAMPLES_PER_COLUMN];
+  // Samples appended since the plot was initialized.
+  unsigned long long scrolls;
+};
 
-// braille_masks is caller-owned scratch memory of
-// nvtop_plot_braille_scratch_size(rows, cols) bytes; it is only used by the
-// braille renderer.
+// Allocate the state for a plot window of rows x cols cells. Returns false on
+// allocation failure.
+bool nvtop_braille_plot_init(struct nvtop_braille_plot *plot, unsigned rows, unsigned cols);
+void nvtop_braille_plot_free(struct nvtop_braille_plot *plot);
+// Record that a new sample was appended to every line of the plot, i.e., the
+// graph scrolled by one sample. Redraws without new data must not call this.
+void nvtop_braille_plot_scrolled(struct nvtop_braille_plot *plot);
+
+// Samples per line the braille renderer expects for a plot window cols
+// characters wide, with samples_per_column (1 or PLOT_MAX_SAMPLES_PER_COLUMN)
+// samples per character column: the shown samples plus the one preceding the
+// oldest shown sample, which is not shown itself but joined to the oldest one.
+// Other sample counts are spread over the width, without owner history.
+size_t nvtop_plot_braille_samples(unsigned cols, unsigned samples_per_column);
+
+// braille is only used by the braille renderer and must have been initialized
+// for the size of win; otherwise the legacy renderer is used.
 void nvtop_line_plot(WINDOW *win, size_t num_samples, const double *data, unsigned num_lines,
-                     enum nvtop_plot_style style, bool newest_left, uint8_t *braille_masks,
+                     enum nvtop_plot_style style, bool newest_left, struct nvtop_braille_plot *braille,
                      char legend[MAX_LINES_PER_PLOT][PLOT_MAX_LEGEND_SIZE]);
 
 // Whether the current build and locale can display Unicode braille patterns.

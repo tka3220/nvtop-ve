@@ -399,8 +399,10 @@ static void initialize_gpu_mem_plot(struct plot_window *plot, struct window_posi
   unsigned long long axis_samples;
   if (braille_plot) {
     unsigned samples_per_column = options->plot_double_resolution ? PLOT_MAX_SAMPLES_PER_COLUMN : 1;
-    samples_per_line = (size_t)cols * samples_per_column;
-    axis_samples = samples_per_line;
+    // One more sample than shown: the renderer joins the oldest shown sample to
+    // it, so the oldest column does not change when it becomes the oldest.
+    axis_samples = (size_t)cols * samples_per_column;
+    samples_per_line = nvtop_plot_braille_samples(cols, samples_per_column);
   } else {
     // The legacy renderer advances one column per metric per update, so the
     // plot width is shared between the metrics displayed in this plot. Round
@@ -414,11 +416,10 @@ static void initialize_gpu_mem_plot(struct plot_window *plot, struct window_posi
   plot->num_samples = samples_per_line;
   // Allocate for the widest mode so the buffer stays valid if the number of
   // metrics changes without reinitializing the plot.
-  plot->num_data = (size_t)cols * PLOT_MAX_SAMPLES_PER_COLUMN * MAX_LINES_PER_PLOT;
+  plot->num_data = nvtop_plot_braille_samples(cols, PLOT_MAX_SAMPLES_PER_COLUMN) * MAX_LINES_PER_PLOT;
   plot->data = calloc(plot->num_data, sizeof(*plot->data));
-  // Sized for the most lines a plot can hold, independently of the plot style.
-  plot->braille_masks = malloc(nvtop_plot_braille_scratch_size(rows, cols));
-  if (!plot->data || !plot->braille_masks) {
+  bool braille_ok = nvtop_braille_plot_init(&plot->braille, rows, cols);
+  if (!plot->data || !braille_ok) {
     endwin();
     perror("Cannot allocate memory: ");
     exit(EXIT_FAILURE);
@@ -597,7 +598,7 @@ static void delete_all_windows(struct nvtop_interface *dwin) {
     delwin(dwin->plots[i].win);
     delwin(dwin->plots[i].plot_window);
     free(dwin->plots[i].data);
-    free(dwin->plots[i].braille_masks);
+    nvtop_braille_plot_free(&dwin->plots[i].braille);
   }
   free_setup_window(&dwin->setup_win);
   free(dwin->plots);
@@ -2562,6 +2563,9 @@ void save_current_data_to_ring(struct list_head *devices, struct nvtop_interface
 
     dev_id++;
   }
+  // Every plotted line received a new sample: the graphs scrolled by one.
+  for (unsigned plot_id = 0; plot_id < interface->num_plots; ++plot_id)
+    nvtop_braille_plot_scrolled(&interface->plots[plot_id].braille);
 }
 
 static unsigned populate_plot_data_from_ring_buffer(struct list_head *devices, const struct nvtop_interface *interface,
@@ -2674,7 +2678,7 @@ static void draw_plots(struct list_head *devices, struct nvtop_interface *interf
 
     nvtop_line_plot(interface->plots[plot_id].plot_window, interface->plots[plot_id].num_samples,
                     interface->plots[plot_id].data, num_lines, interface->options.plot_style,
-                    interface->options.plot_left_to_right, interface->plots[plot_id].braille_masks, plot_legend);
+                    interface->options.plot_left_to_right, &interface->plots[plot_id].braille, plot_legend);
 
     wnoutrefresh(interface->plots[plot_id].plot_window);
   }
