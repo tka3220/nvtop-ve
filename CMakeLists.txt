@@ -4,7 +4,7 @@ cmake_minimum_required(VERSION 3.18)
 #                              PROJECT                              #
 #///////////////////////////////////////////////////////////////////#
 
-project(nvtop VERSION 3.3.2
+project(nvtop VERSION 3.4.0
   LANGUAGES C CXX)
 
 set(default_build_type "Release")
@@ -65,26 +65,31 @@ if(APPLE)
   set(APPLE_SUPPORT_DEFAULT ON)
   set(NVIDIA_SUPPORT_DEFAULT OFF)
   set(AMDGPU_SUPPORT_DEFAULT OFF)
+  set(RADEON_SUPPORT_DEFAULT OFF)
   set(INTEL_SUPPORT_DEFAULT OFF)
   set(MSM_SUPPORT_DEFAULT OFF)
   set(PANFROST_SUPPORT_DEFAULT OFF)
   set(PANTHOR_SUPPORT_DEFAULT OFF)
   set(ASCEND_SUPPORT_DEFAULT OFF)
   set(METAX_SUPPORT_DEFAULT OFF)
+  set(IXML_SUPPORT_DEFAULT OFF)
 elseif(ASCEND_SUPPORT)
   set(APPLE_SUPPORT_DEFAULT OFF)
   set(NVIDIA_SUPPORT_DEFAULT OFF)
   set(AMDGPU_SUPPORT_DEFAULT OFF)
+  set(RADEON_SUPPORT_DEFAULT OFF)
   set(INTEL_SUPPORT_DEFAULT OFF)
   set(MSM_SUPPORT_DEFAULT OFF)
   set(PANFROST_SUPPORT_DEFAULT OFF)
   set(PANTHOR_SUPPORT_DEFAULT OFF)
   set(ASCEND_SUPPORT_DEFAULT ON)
   set(METAX_SUPPORT_DEFAULT OFF)
+  set(IXML_SUPPORT_DEFAULT OFF)
 else()
   set(APPLE_SUPPORT_DEFAULT OFF)
   set(NVIDIA_SUPPORT_DEFAULT ON)
   set(AMDGPU_SUPPORT_DEFAULT ON)
+  set(RADEON_SUPPORT_DEFAULT ON)
   set(INTEL_SUPPORT_DEFAULT ON)
   set(V3D_SUPPORT_DEFAULT ON)
   set(MSM_SUPPORT_DEFAULT ON)
@@ -92,9 +97,10 @@ else()
   set(PANTHOR_SUPPORT_DEFAULT ON)
   set(ASCEND_SUPPORT_DEFAULT OFF)
   set(METAX_SUPPORT_DEFAULT ON)
+  set(IXML_SUPPORT_DEFAULT ON)
 endif()
 
-# TPU and Enflame GCU support is only available on Linux
+# TPU, Enflame GCU, Gaudi and T-Head PPU support is only available on Linux
 if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
   # Check for libtpuinfo.so to set the default for TPU support
   find_library(LIBTPUINFO
@@ -108,9 +114,13 @@ if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
     set(TPU_SUPPORT_DEFAULT ON)
   endif()
   set(ENFLAME_SUPPORT_DEFAULT ON)
+  set(GAUDI_SUPPORT_DEFAULT ON)
+  set(PPU_SUPPORT_DEFAULT ON)
 else()
   set(TPU_SUPPORT_DEFAULT OFF)
   set(ENFLAME_SUPPORT_DEFAULT OFF)
+  set(GAUDI_SUPPORT_DEFAULT OFF)
+  set(PPU_SUPPORT_DEFAULT OFF)
 endif()
 
 # Rockchip support is only available on Linux on arm
@@ -122,8 +132,30 @@ else()
   set(ROCKCHIP_SUPPORT_DEFAULT OFF)
 endif()
 
+# Intel NPU support (intel_vpu accel driver) is only available on Linux
+if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  set(INTEL_NPU_SUPPORT_DEFAULT ON)
+else()
+  set(INTEL_NPU_SUPPORT_DEFAULT OFF)
+endif()
+
+# AMD NPU support (amdxdna accel driver) is only available on Linux
+if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  set(AMD_NPU_SUPPORT_DEFAULT ON)
+else()
+  set(AMD_NPU_SUPPORT_DEFAULT OFF)
+endif()
+
+# Tenstorrent support is only available on Linux
+if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  set(TENSTORRENT_SUPPORT_DEFAULT ON)
+else()
+  set(TENSTORRENT_SUPPORT_DEFAULT OFF)
+endif()
+
 option(NVIDIA_SUPPORT "Build support for NVIDIA GPUs through libnvml" ${NVIDIA_SUPPORT_DEFAULT})
 option(AMDGPU_SUPPORT "Build support for AMD GPUs through amdgpu driver" ${AMDGPU_SUPPORT_DEFAULT})
+option(RADEON_SUPPORT "Build support for ATI/AMD GPUs through radeon driver" ${RADEON_SUPPORT_DEFAULT})
 option(INTEL_SUPPORT "Build support for Intel GPUs through i915 or xe driver" ${INTEL_SUPPORT_DEFAULT})
 option(MSM_SUPPORT "Build support for Adreno GPUs through msm driver" ${MSM_SUPPORT_DEFAULT})
 option(APPLE_SUPPORT "Build support for Apple GPUs through Metal" ${APPLE_SUPPORT_DEFAULT})
@@ -133,8 +165,15 @@ option(ASCEND_SUPPORT "Build support for Ascend NPUs through Ascend DCMI" ${ASCE
 option(V3D_SUPPORT "Build support for Raspberrypi through v3d" ${V3D_SUPPORT_DEFAULT})
 option(TPU_SUPPORT "Build support for Google TPUs through GRPC" ${TPU_SUPPORT_DEFAULT})
 option(ROCKCHIP_SUPPORT "Enable support for Rockchip NPU" ${ROCKCHIP_SUPPORT_DEFAULT})
+option(INTEL_NPU_SUPPORT "Build support for Intel NPUs through the intel_vpu driver" ${INTEL_NPU_SUPPORT_DEFAULT})
+option(AMD_NPU_SUPPORT "Build support for AMD NPUs through the amdxdna driver" ${AMD_NPU_SUPPORT_DEFAULT})
 option(METAX_SUPPORT "Build support for MetaX GPUs through libmxsml" ${METAX_SUPPORT_DEFAULT})
 option(ENFLAME_SUPPORT "Build support for Enflame GCUs through libefml" ${ENFLAME_SUPPORT_DEFAULT})
+option(TENSTORRENT_SUPPORT "Build support for Tenstorrent accelerators through tt-kmd" ${TENSTORRENT_SUPPORT_DEFAULT})
+option(IXML_SUPPORT "Build support for Iluvatar CoreX GPUs through libixml" ${IXML_SUPPORT_DEFAULT})
+option(GAUDI_SUPPORT "Build support for Intel Gaudi HPUs through libhlml" ${GAUDI_SUPPORT_DEFAULT})
+
+option(PPU_SUPPORT "Build support for T-Head PPUs through libhgml" ${PPU_SUPPORT_DEFAULT})
 
 add_subdirectory(src)
 

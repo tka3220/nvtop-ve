@@ -20,7 +20,9 @@
  */
 
 #include <ctype.h>
+#include <errno.h>
 #include <math.h>
+#include <stdio.h>
 #include <stdlib.h>
 
 #include "nvtop/extract_gpuinfo.h"
@@ -120,6 +122,73 @@ bool gpuinfo_refresh_dynamic_info(struct list_head *devices) {
 
 #undef MYMIN
 #define MYMIN(a, b) (((a) < (b)) ? (a) : (b))
+void gpuinfo_fix_shared_memory_from_process_info(struct gpu_info *device) {
+  struct gpuinfo_dynamic_info *dynamic_info = &device->dynamic_info;
+  if (!device->static_info.memory_shared_with_host ||
+      GPUINFO_DYNAMIC_FIELD_VALID(dynamic_info, used_memory) ||
+      !GPUINFO_DYNAMIC_FIELD_VALID(dynamic_info, system_free_memory))
+    return;
+
+  // Report the allocations we have. Only a successful empty query establishes
+  // zero usage without any valid memory entries (including for fdinfo backends).
+  bool have_used = device->processes_count == 0 && device->processes_query_succeeded;
+  // A buffer shared between DRM clients is reported by each of them, and nothing
+  // identifies which clients hold the same buffer. Sum the estimated private
+  // part of each client (its resident memory minus its shared memory, both
+  // merged per process) and count shared memory once, as the largest amount
+  // reported by a single client. Shared sizes also count buffers that are not
+  // resident, so both parts can be understated: the result is a lower bound of
+  // the memory held by the processes.
+  unsigned long long used = 0, max_shared = 0;
+  for (unsigned i = 0; i < device->processes_count; ++i) {
+    const struct gpu_process *process = &device->processes[i];
+    if (!GPUINFO_PROCESS_FIELD_VALID(process, gpu_memory_usage))
+      continue;
+    unsigned long long shared = 0;
+    if (GPUINFO_PROCESS_FIELD_VALID(process, gpu_memory_shared))
+      shared = MYMIN(process->gpu_memory_shared, process->gpu_memory_usage);
+    unsigned long long private_memory = process->gpu_memory_usage - shared;
+    if (private_memory > ULLONG_MAX - used)
+      return;
+    used += private_memory;
+    if (GPUINFO_PROCESS_FIELD_VALID(process, gpu_memory_shared) &&
+        MYMIN(process->gpu_memory_shared_max, shared) > max_shared)
+      max_shared = MYMIN(process->gpu_memory_shared_max, shared);
+    have_used = true;
+  }
+  if (!have_used || max_shared > ULLONG_MAX - used)
+    return;
+  used += max_shared;
+  if (dynamic_info->system_free_memory > ULLONG_MAX - used)
+    return;
+  // Per-process accounting can count a buffer shared between processes once
+  // per process, but GPU allocations cannot exceed the memory that is not
+  // available, so the capacity never exceeds the system total.
+  unsigned long long system_free = dynamic_info->system_free_memory;
+  if (GPUINFO_DYNAMIC_FIELD_VALID(dynamic_info, system_total_memory) &&
+      system_free <= dynamic_info->system_total_memory && used > dynamic_info->system_total_memory - system_free)
+    used = dynamic_info->system_total_memory - system_free;
+
+  SET_GPUINFO_DYNAMIC(dynamic_info, used_memory, used);
+  SET_GPUINFO_DYNAMIC(dynamic_info, free_memory, dynamic_info->system_free_memory);
+  SET_GPUINFO_DYNAMIC(dynamic_info, total_memory, used + dynamic_info->free_memory);
+  SET_GPUINFO_DYNAMIC(dynamic_info, mem_util_rate,
+                      dynamic_info->total_memory ? (unsigned)(100.L * used / dynamic_info->total_memory) : 0);
+  // Process metadata is refreshed before the derived capacity is available.
+  for (unsigned i = 0; i < device->processes_count; ++i) {
+    if (!GPUINFO_PROCESS_FIELD_VALID(&device->processes[i], gpu_memory_usage)) {
+      RESET_GPUINFO_PROCESS(&device->processes[i], gpu_memory_percentage);
+      continue;
+    }
+    // A process can exceed the capped capacity when it holds shared buffers.
+    double percentage =
+        dynamic_info->total_memory
+            ? fmin(100., round(100. * device->processes[i].gpu_memory_usage / dynamic_info->total_memory))
+            : 0.;
+    SET_GPUINFO_PROCESS(&device->processes[i], gpu_memory_percentage, (unsigned)percentage);
+  }
+}
+
 bool gpuinfo_fix_dynamic_info_from_process_info(struct list_head *devices) {
   struct gpu_info *device;
 
@@ -140,7 +209,9 @@ bool gpuinfo_fix_dynamic_info_from_process_info(struct list_head *devices) {
     // Update them here since per-process sysfs exposes this information.
     bool needGpuEncode = !GPUINFO_DYNAMIC_FIELD_VALID(dynamic_info, encoder_rate);
     bool needGpuDecode = !GPUINFO_DYNAMIC_FIELD_VALID(dynamic_info, decoder_rate);
-    bool needGPUMemory = !GPUINFO_DYNAMIC_FIELD_VALID(dynamic_info, used_memory) &&
+    gpuinfo_fix_shared_memory_from_process_info(device);
+    bool needGPUMemory = !device->static_info.memory_shared_with_host &&
+                         !GPUINFO_DYNAMIC_FIELD_VALID(dynamic_info, used_memory) &&
                          GPUINFO_DYNAMIC_FIELD_VALID(dynamic_info, total_memory);
     if (needGpuRate || needGpuEncode || needGpuDecode || needGPUMemory) {
       for (unsigned processIdx = 0; processIdx < device->processes_count; ++processIdx) {
@@ -168,7 +239,7 @@ bool gpuinfo_fix_dynamic_info_from_process_info(struct list_head *devices) {
         }
         if (needGPUMemory && GPUINFO_PROCESS_FIELD_VALID(process_info, gpu_memory_usage)) {
           if (GPUINFO_DYNAMIC_FIELD_VALID(dynamic_info, used_memory)) {
-            dynamic_info->used_memory += dynamic_info->used_memory + process_info->gpu_memory_usage;
+            dynamic_info->used_memory += process_info->gpu_memory_usage;
           } else {
             SET_GPUINFO_DYNAMIC(dynamic_info, used_memory, process_info->gpu_memory_usage);
           }
@@ -187,6 +258,13 @@ bool gpuinfo_fix_dynamic_info_from_process_info(struct list_head *devices) {
       // We already checked that used_memory <= total_memory so no underflow can happen here
       unsigned long long free = dynamic_info->total_memory - dynamic_info->used_memory;
       SET_GPUINFO_DYNAMIC(dynamic_info, free_memory, free);
+    }
+    // Devices with dedicated memory that report its capacity but not its usage
+    // (e.g., discrete Intel GPUs without CAP_PERFMON) get their used memory from
+    // the process list: derive the graph's memory rate from it as well.
+    if (needGPUMemory && !GPUINFO_DYNAMIC_FIELD_VALID(dynamic_info, mem_util_rate) &&
+        GPUINFO_DYNAMIC_FIELD_VALID(dynamic_info, used_memory) && dynamic_info->total_memory > 0) {
+      SET_GPUINFO_DYNAMIC(dynamic_info, mem_util_rate, dynamic_info->used_memory * 100 / dynamic_info->total_memory);
     }
     if (!GPUINFO_DYNAMIC_FIELD_VALID(dynamic_info, gpu_util_rate) && validReportedGpuRate) {
       SET_GPUINFO_DYNAMIC(dynamic_info, gpu_util_rate, reportedGpuRate);
@@ -282,7 +360,10 @@ static void gpuinfo_clean_old_cache(void) {
 bool gpuinfo_refresh_processes(struct list_head *devices) {
   struct gpu_info *device;
 
-  list_for_each_entry(device, devices, list) { device->processes_count = 0; }
+  list_for_each_entry(device, devices, list) {
+    device->processes_count = 0;
+    device->processes_query_succeeded = false;
+  }
 
   // Go through the /proc hierarchy once and populate the processes for all registered GPUs
   processinfo_sweep_fdinfos();
@@ -338,6 +419,36 @@ bool extract_drm_fdinfo_key_value(char *buf, char **key, char **val) {
   return true;
 }
 
+bool extract_drm_fdinfo_size(const char *val, unsigned long long *bytes) {
+  // strtoull accepts leading whitespace and negates a leading minus sign.
+  if (!isdigit((unsigned char)*val))
+    return false;
+  char *endptr;
+  errno = 0;
+  unsigned long long value = strtoull(val, &endptr, 10);
+  if (errno == ERANGE)
+    return false;
+  while (isspace((unsigned char)*endptr))
+    endptr++;
+  unsigned long long unit;
+  if (*endptr == '\0' || !strcmp(endptr, "B"))
+    unit = 1;
+  else if (!strcmp(endptr, "KiB") || !strcmp(endptr, "kB"))
+    unit = 1ULL << 10;
+  else if (!strcmp(endptr, "MiB"))
+    unit = 1ULL << 20;
+  else if (!strcmp(endptr, "GiB"))
+    unit = 1ULL << 30;
+  else if (!strcmp(endptr, "TiB"))
+    unit = 1ULL << 40;
+  else
+    return false;
+  if (value > ULLONG_MAX / unit)
+    return false;
+  *bytes = value * unit;
+  return true;
+}
+
 extern inline unsigned busy_usage_from_time_usage_round(uint64_t current_use_ns, uint64_t previous_use_ns,
                                                         uint64_t time_between_measurement);
 
@@ -364,6 +475,98 @@ unsigned nvtop_pcie_gen_from_link_speed(unsigned linkSpeed) {
     break;
   }
   return pcieGen;
+}
+
+void gpuinfo_refresh_system_memory(struct gpuinfo_dynamic_info *dynamic_info) {
+  RESET_GPUINFO_DYNAMIC(dynamic_info, system_total_memory);
+  RESET_GPUINFO_DYNAMIC(dynamic_info, system_free_memory);
+  unsigned long long mem_total_kb = 0, mem_available_kb = 0;
+  bool have_total = false, have_available = false;
+  char line[256];
+
+  FILE *fp = fopen("/proc/meminfo", "r");
+  if (!fp)
+    return;
+
+  while (fgets(line, sizeof(line), fp)) {
+    if (sscanf(line, "MemTotal: %llu kB", &mem_total_kb) == 1) {
+      have_total = true;
+      continue;
+    }
+    if (sscanf(line, "MemAvailable: %llu kB", &mem_available_kb) == 1) {
+      have_available = true;
+      continue;
+    }
+  }
+  bool read_failed = ferror(fp);
+  fclose(fp);
+  if (read_failed)
+    return;
+
+  if (!have_total || !have_available || mem_total_kb == 0 || mem_total_kb > ULLONG_MAX / 1024 ||
+      mem_available_kb > ULLONG_MAX / 1024)
+    return;
+
+  unsigned long long total = mem_total_kb * 1024;
+  unsigned long long available = mem_available_kb * 1024;
+  if (available > total)
+    available = total;
+
+  SET_GPUINFO_DYNAMIC(dynamic_info, system_total_memory, total);
+  SET_GPUINFO_DYNAMIC(dynamic_info, system_free_memory, available);
+}
+
+bool gpuinfo_get_system_used_memory(const struct gpuinfo_dynamic_info *dynamic_info, unsigned long long *used) {
+  if (!GPUINFO_DYNAMIC_FIELD_VALID(dynamic_info, system_total_memory) ||
+      !GPUINFO_DYNAMIC_FIELD_VALID(dynamic_info, system_free_memory) ||
+      dynamic_info->system_free_memory > dynamic_info->system_total_memory)
+    return false;
+  *used = dynamic_info->system_total_memory - dynamic_info->system_free_memory;
+  return true;
+}
+
+struct gpuinfo_memory_display gpuinfo_get_memory_display(const struct gpu_info *device, bool prefer_system_memory) {
+  const struct gpuinfo_dynamic_info *dynamic_info = &device->dynamic_info;
+  struct gpuinfo_memory_display memory_info = {0};
+  memory_info.total_memory_valid = GPUINFO_DYNAMIC_FIELD_VALID(dynamic_info, total_memory);
+  memory_info.used_memory_valid = GPUINFO_DYNAMIC_FIELD_VALID(dynamic_info, used_memory);
+  memory_info.free_memory_valid = GPUINFO_DYNAMIC_FIELD_VALID(dynamic_info, free_memory);
+  memory_info.mem_util_rate_valid = GPUINFO_DYNAMIC_FIELD_VALID(dynamic_info, mem_util_rate);
+  if (memory_info.total_memory_valid)
+    memory_info.total_memory = dynamic_info->total_memory;
+  if (memory_info.used_memory_valid)
+    memory_info.used_memory = dynamic_info->used_memory;
+  if (memory_info.free_memory_valid)
+    memory_info.free_memory = dynamic_info->free_memory;
+  if (memory_info.mem_util_rate_valid)
+    memory_info.mem_util_rate = dynamic_info->mem_util_rate;
+
+  // Display the GPU's own memory counters for dedicated memory, or when GPU
+  // usage and capacity are available on a shared-memory device and the system
+  // memory was not requested instead.
+  if (!device->static_info.memory_shared_with_host ||
+      (!prefer_system_memory && memory_info.total_memory_valid && memory_info.used_memory_valid))
+    return memory_info;
+
+  // Without valid system counters, keep the GPU display values as available.
+  if (!gpuinfo_get_system_used_memory(dynamic_info, &memory_info.used_memory))
+    return memory_info;
+
+  // GPU accounting is unavailable or the system memory was requested: display
+  // the system RAM usage.
+  return (struct gpuinfo_memory_display){
+      .total_memory = dynamic_info->system_total_memory,
+      .used_memory = memory_info.used_memory,
+      .free_memory = dynamic_info->system_free_memory,
+      .mem_util_rate = dynamic_info->system_total_memory
+                           ? (unsigned)(100.L * memory_info.used_memory / dynamic_info->system_total_memory)
+                           : 0,
+      .total_memory_valid = true,
+      .used_memory_valid = true,
+      .free_memory_valid = true,
+      .mem_util_rate_valid = true,
+      .system_memory = true,
+  };
 }
 
 void gpuinfo_refresh_utilisation_rate(struct gpu_info *gpu_info) {
@@ -407,4 +610,23 @@ void gpuinfo_refresh_utilisation_rate(struct gpu_info *gpu_info) {
   utilisation_rate = utilisation_rate > 100 ? 100 : utilisation_rate;
 
   SET_GPUINFO_DYNAMIC(&gpu_info->dynamic_info, gpu_util_rate, utilisation_rate);
+}
+
+void gpuinfo_add_extra_clock(struct gpuinfo_dynamic_info *dynamic_info, const char *name, unsigned int speed_mhz,
+                             bool secondary) {
+  // The count lives as long as the valid bit does, so the RESET_ALL every
+  // vendor does at the start of a refresh empties the array as well.
+  if (!IS_VALID(gpuinfo_extra_clocks_valid, dynamic_info->valid))
+    dynamic_info->extra_clock_count = 0;
+
+  if (dynamic_info->extra_clock_count >= MAX_EXTRA_CLOCK_DOMAINS)
+    return;
+
+  struct gpuinfo_extra_clock *clock = &dynamic_info->extra_clocks[dynamic_info->extra_clock_count];
+  snprintf(clock->name, sizeof(clock->name), "%s", name);
+  clock->speed = speed_mhz;
+  clock->secondary = secondary;
+
+  dynamic_info->extra_clock_count++;
+  SET_VALID(gpuinfo_extra_clocks_valid, dynamic_info->valid);
 }

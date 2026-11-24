@@ -13,6 +13,7 @@ add_executable(nvtop
   interface_setup_win.c
   interface_ring_buffer.c
   extract_gpuinfo.c
+  pcie_utilization.c
   time.c
   plot.c
   ini.c
@@ -46,12 +47,15 @@ if(UNIX AND NOT APPLE)
 elseif(APPLE)
   target_sources(nvtop PRIVATE
     get_process_info_mac.c
+    get_process_info_mac_utils.c
     extract_processinfo_mac.c
     info_messages_mac.c)
 endif()
 
 if(NVIDIA_SUPPORT)
   target_sources(nvtop PRIVATE extract_gpuinfo_nvidia.c)
+else()
+  target_sources(nvtop PRIVATE nvlink_nvidia_disabled.c)
 endif()
 
 option(VE_SUPPORT "Build support for NEC SX-Aurora TSUBASA Vector Engines through /sys/class/ve, vecmd and ve-mpstat" ON)
@@ -61,11 +65,30 @@ endif()
 
 if(ASCEND_SUPPORT)
   target_sources(nvtop PRIVATE extract_gpuinfo_ascend.c)
-  set(DCMI_LIBRARY_PATH /usr/local/Ascend/driver/lib64/driver)
-  target_link_libraries(nvtop PRIVATE "${DCMI_LIBRARY_PATH}/libdcmi.so")
+  find_package(Threads REQUIRED)
+  set(ASCEND_ROOT "" CACHE PATH "Ascend toolkit/driver root (for example /usr/local/Ascend)")
+  set(ASCEND_DCMI_HINTS
+    "/usr/local/Ascend/driver/lib64/driver"
+    "/usr/local/Ascend/driver/lib64"
+    "/usr/local/Ascend/lib64")
+  if(ASCEND_ROOT)
+    list(PREPEND ASCEND_DCMI_HINTS
+      "${ASCEND_ROOT}/driver/lib64/driver"
+      "${ASCEND_ROOT}/driver/lib64"
+      "${ASCEND_ROOT}/lib64")
+  endif()
+  find_library(DCMI_LIBRARY
+    NAMES dcmi
+    HINTS ${ASCEND_DCMI_HINTS}
+    PATH_SUFFIXES driver lib64)
+  if(NOT DCMI_LIBRARY)
+    message(FATAL_ERROR "Ascend support enabled, but libdcmi.so was not found. Set ASCEND_ROOT to the Ascend installation root.")
+  endif()
+  message(STATUS "Found Ascend DCMI: ${DCMI_LIBRARY}")
+  target_link_libraries(nvtop PRIVATE "${DCMI_LIBRARY}" Threads::Threads)
 endif()
 
-if(AMDGPU_SUPPORT OR INTEL_SUPPORT OR V3D_SUPPORT)
+if(AMDGPU_SUPPORT OR RADEON_SUPPORT OR INTEL_SUPPORT OR V3D_SUPPORT)
   if((SYSTEMD_FOUND AND UDEV_FOUND AND USE_LIBUDEV_OVER_LIBSYSTEMD) OR(NOT SYSTEMD_FOUND AND UDEV_FOUND))
     target_compile_definitions(nvtop PRIVATE USING_LIBUDEV)
     target_link_libraries(nvtop PRIVATE udev)
@@ -79,8 +102,8 @@ if(AMDGPU_SUPPORT OR INTEL_SUPPORT OR V3D_SUPPORT)
   target_sources(nvtop PRIVATE device_discovery_linux.c)
 endif()
 
-if(AMDGPU_SUPPORT OR INTEL_SUPPORT OR MSM_SUPPORT OR PANFROST_SUPPORT OR PANTHOR_SUPPORT)
-  # Search for libdrm for AMDGPU support
+if(AMDGPU_SUPPORT OR RADEON_SUPPORT OR INTEL_SUPPORT OR MSM_SUPPORT OR PANFROST_SUPPORT OR PANTHOR_SUPPORT)
+  # Search for libdrm for AMDGPU and radeon support
   find_package(Libdrm)
 
   if(Libdrm_FOUND)
@@ -97,9 +120,29 @@ if (AMDGPU_SUPPORT)
   target_sources(nvtop PRIVATE extract_gpuinfo_amdgpu_utils.c)
 endif()
 
+if (RADEON_SUPPORT)
+  target_sources(nvtop PRIVATE extract_gpuinfo_radeon.c)
+endif()
+
 if (MSM_SUPPORT)
   target_sources(nvtop PRIVATE extract_gpuinfo_msm.c)
   target_sources(nvtop PRIVATE extract_gpuinfo_msm_utils.c)
+
+  pkg_check_modules(NPUPERF qcnpuperf)
+  if (NPUPERF_FOUND)
+    target_include_directories(nvtop
+      PRIVATE
+        ${NPUPERF_INCLUDE_DIRS}
+    )
+
+    target_link_libraries(nvtop
+      PRIVATE
+        ${NPUPERF_LIBRARIES}
+    )
+    target_sources(nvtop PRIVATE extract_npuinfo_qualcomm.c)
+  else()
+    message(STATUS "libqcnpuperf not found: Qualcomm NPU monitoring disabled")
+  endif()
 endif()
 
 if(INTEL_SUPPORT)
@@ -114,10 +157,16 @@ if(V3D_SUPPORT)
 endif()
 
 if(APPLE_SUPPORT)
-  target_sources(nvtop PRIVATE extract_gpuinfo_apple.m)
+  target_sources(nvtop PRIVATE
+    extract_gpuinfo_apple.m
+    extract_gpuinfo_apple_ioreport.c
+    extract_gpuinfo_apple_pci.c
+    extract_gpuinfo_apple_smc.c
+    extract_gpuinfo_apple_utils.m)
   target_link_libraries(nvtop PRIVATE
     "-framework Metal"
     "-framework AppKit"
+    "-framework CoreFoundation"
     "-framework Foundation"
     "-framework QuartzCore"
     "-framework IOKit")
@@ -150,6 +199,16 @@ if(TPU_SUPPORT)
   target_sources(nvtop PRIVATE extract_gpuinfo_tpu.c)
 endif()
 
+if(INTEL_NPU_SUPPORT)
+  message(STATUS "Building with Intel NPU support")
+  target_sources(nvtop PRIVATE extract_npuinfo_intel.c)
+endif()
+
+if(AMD_NPU_SUPPORT)
+  message(STATUS "Building with AMD NPU support")
+  target_sources(nvtop PRIVATE extract_npuinfo_amd.c)
+endif()
+
 if(ROCKCHIP_SUPPORT)
   message(STATUS "Building with Rockchip NPU support")
 
@@ -163,6 +222,26 @@ endif()
 if(ENFLAME_SUPPORT)
   message(STATUS "Building with Enflame GCU support")
   target_sources(nvtop PRIVATE extract_gcuinfo_enflame.c)
+endif()
+
+if(TENSTORRENT_SUPPORT)
+  target_sources(nvtop PRIVATE extract_gpuinfo_tenstorrent.c)
+endif()
+
+if(PPU_SUPPORT)
+  target_sources(nvtop PRIVATE extract_gpuinfo_ppu.c)
+endif()
+
+if(IXML_SUPPORT)
+  message(STATUS "Building with Iluvatar CoreX GPU support")
+  target_sources(nvtop PRIVATE extract_gpuinfo_ixml.c)
+endif()
+
+if(GAUDI_SUPPORT)
+  message(STATUS "Building with Intel Gaudi HPU support")
+  find_package(Threads REQUIRED)
+  target_sources(nvtop PRIVATE extract_gpuinfo_gaudi.c)
+  target_link_libraries(nvtop PRIVATE Threads::Threads)
 endif()
 
 target_include_directories(nvtop PRIVATE

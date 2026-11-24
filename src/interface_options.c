@@ -102,7 +102,10 @@ unsigned interface_check_and_fix_monitored_gpus(unsigned num_devices, struct lis
     numMonitored++;
   }
   list_for_each_entry(device, monitoredGpu, list) { processinfo_enable_disable_callback_for(device, true); }
-  list_for_each_entry(device, nonMonitoredGpu, list) { processinfo_enable_disable_callback_for(device, false); }
+  list_for_each_entry(device, nonMonitoredGpu, list) {
+    processinfo_enable_disable_callback_for(device, false);
+    device->processes_count = 0;
+  }
   return numMonitored;
 }
 
@@ -128,7 +131,14 @@ void alloc_interface_options_internals(char *config_location, unsigned num_devic
   options->has_monitored_set_changed = false;
   options->show_startup_messages = true;
   options->filter_nvtop_pid = true;
+  options->hide_processes_list = false;
   options->has_gpu_info_bar = false;
+  options->has_all_info_bar = false;
+  options->dynamic_memory_units = false;
+  options->gpu_plot_color_idx[0] = 1;  // Cyan
+  options->gpu_plot_color_idx[1] = 3;  // Yellow
+  options->gpu_plot_color_idx[2] = 2;  // Green
+  options->gpu_plot_color_idx[3] = 4;  // Blue
   if (config_location) {
     options->config_file_location = malloc(strlen(config_location) + 1);
     if (!options->config_file_location) {
@@ -171,13 +181,21 @@ static const char header_section[] = "HeaderOption";
 static const char header_value_use_fahrenheit[] = "UseFahrenheit";
 static const char header_value_encode_decode_timer[] = "EncodeHideTimer";
 static const char header_value_gpu_info_bar[] = "GPUInfoBar";
+static const char header_value_all_info_bar[] = "AllInfoBar";
 
 static const char chart_section[] = "ChartOption";
 static const char chart_value_reverse[] = "ReverseChart";
+static const char *chart_value_gpu_plot_color[MAX_LINES_PER_PLOT] = {
+    "GpuPlotColor0", "GpuPlotColor1", "GpuPlotColor2", "GpuPlotColor3"};
+
+static const char *plot_color_names[] = {
+    "Red", "Cyan", "Green", "Yellow", "Blue", "Magenta", "White"};
+static const unsigned plot_color_names_count = 7;
 
 static const char process_list_section[] = "ProcessListOption";
 static const char process_hide_nvtop_process_list[] = "HideNvtopProcessList";
 static const char process_hide_nvtop_process[] = "HideNvtopProcess";
+static const char process_value_dynamic_memory_units[] = "DynamicMemoryUnits";
 static const char process_value_sortby[] = "SortBy";
 static const char process_value_display_field[] = "DisplayField";
 static const char *process_sortby_vals[process_field_count + 1] = {
@@ -190,9 +208,11 @@ static const char device_section[] = "Device";
 static const char device_pdev[] = "Pdev";
 static const char device_monitor[] = "Monitor";
 static const char device_shown_value[] = "ShownInfo";
+static const char device_show_system_memory[] = "ShowSystemMemory";
 static const char *device_draw_vals[plot_information_count + 1] = {
     "gpuRate",       "gpuMemRate", "encodeRate",   "decodeRate",      "temperature",
-    "powerDrawRate", "fanSpeed",   "gpuClockRate", "gpuMemClockRate", "effectiveLoadRate", "none"};
+    "powerDrawRate", "fanSpeed",   "gpuClockRate", "gpuMemClockRate", "effectiveLoadRate",
+    "pcieRxRate",    "pcieTxRate", "hvxUtilRate",  "hmxUtilRate",     "none"};
 
 static int nvtop_option_ini_handler(void *user, const char *section, const char *name, const char *value) {
   struct nvtop_option_ini_data *ini_data = (struct nvtop_option_ini_data *)user;
@@ -243,6 +263,14 @@ static int nvtop_option_ini_handler(void *user, const char *section, const char 
         ini_data->options->has_gpu_info_bar = false;
       }
     }
+    if (strcmp(name, header_value_all_info_bar) == 0) {
+      if (strcmp(value, "true") == 0) {
+        ini_data->options->has_all_info_bar = true;
+      }
+      if (strcmp(value, "false") == 0) {
+        ini_data->options->has_all_info_bar = false;
+      }
+    }
   }
   // Chart Options
   if (strcmp(section, chart_section) == 0) {
@@ -252,6 +280,14 @@ static int nvtop_option_ini_handler(void *user, const char *section, const char 
       }
       if (strcmp(value, "false") == 0) {
         ini_data->options->plot_left_to_right = false;
+      }
+    }
+    for (unsigned s = 0; s < MAX_LINES_PER_PLOT; ++s) {
+      if (strcmp(name, chart_value_gpu_plot_color[s]) == 0) {
+        for (unsigned i = 0; i < plot_color_names_count; ++i) {
+          if (strcmp(value, plot_color_names[i]) == 0)
+            ini_data->options->gpu_plot_color_idx[s] = i;
+        }
       }
     }
   }
@@ -271,6 +307,14 @@ static int nvtop_option_ini_handler(void *user, const char *section, const char 
       }
       if (strcmp(value, "false") == 0) {
         ini_data->options->filter_nvtop_pid = false;
+      }
+    }
+    if (strcmp(name, process_value_dynamic_memory_units) == 0) {
+      if (strcmp(value, "true") == 0) {
+        ini_data->options->dynamic_memory_units = true;
+      }
+      if (strcmp(value, "false") == 0) {
+        ini_data->options->dynamic_memory_units = false;
       }
     }
     if (strcmp(name, process_value_sortby) == 0) {
@@ -326,6 +370,12 @@ static int nvtop_option_ini_handler(void *user, const char *section, const char 
           ini_data->options->gpu_specific_opts[ini_data->selectedGpu].doNotMonitor = false;
         if (strcmp(value, "false") == 0)
           ini_data->options->gpu_specific_opts[ini_data->selectedGpu].doNotMonitor = true;
+      }
+      if (strcmp(name, device_show_system_memory) == 0) {
+        if (strcmp(value, "true") == 0)
+          ini_data->options->gpu_specific_opts[ini_data->selectedGpu].show_system_memory = true;
+        if (strcmp(value, "false") == 0)
+          ini_data->options->gpu_specific_opts[ini_data->selectedGpu].show_system_memory = false;
       }
     }
   }
@@ -400,15 +450,20 @@ bool save_interface_options_to_config_file(unsigned total_dev_count, const nvtop
   fprintf(config_file, "%s = %s\n", header_value_use_fahrenheit, boolean_string(options->temperature_in_fahrenheit));
   fprintf(config_file, "%s = %e\n", header_value_encode_decode_timer, options->encode_decode_hiding_timer);
   fprintf(config_file, "%s = %s\n", header_value_gpu_info_bar, boolean_string(options->has_gpu_info_bar));
+  fprintf(config_file, "%s = %s\n", header_value_all_info_bar, boolean_string(options->has_all_info_bar));
 
   // Chart Options
   fprintf(config_file, "\n[%s]\n", chart_section);
   fprintf(config_file, "%s = %s\n", chart_value_reverse, boolean_string(options->plot_left_to_right));
+  for (unsigned s = 0; s < MAX_LINES_PER_PLOT; ++s)
+    fprintf(config_file, "%s = %s\n", chart_value_gpu_plot_color[s],
+            plot_color_names[options->gpu_plot_color_idx[s]]);
 
   // Process Options
   fprintf(config_file, "\n[%s]\n", process_list_section);
   fprintf(config_file, "%s = %s\n", process_hide_nvtop_process_list, boolean_string(options->hide_processes_list));
   fprintf(config_file, "%s = %s\n", process_hide_nvtop_process, boolean_string(options->filter_nvtop_pid));
+  fprintf(config_file, "%s = %s\n", process_value_dynamic_memory_units, boolean_string(options->dynamic_memory_units));
   fprintf(config_file, "%s = %s\n", process_value_sort_order,
           options->sort_descending_order ? process_sort_descending : process_sort_ascending);
   fprintf(config_file, "%s = %s\n", process_value_sortby, process_sortby_vals[options->sort_processes_by]);
@@ -427,6 +482,8 @@ bool save_interface_options_to_config_file(unsigned total_dev_count, const nvtop
     fprintf(config_file, "\n[%s]\n", device_section);
     fprintf(config_file, "%s = %s\n", device_pdev, options->gpu_specific_opts[i].linkedGpu->pdev);
     fprintf(config_file, "%s = %s\n", device_monitor, boolean_string(!options->gpu_specific_opts[i].doNotMonitor));
+    fprintf(config_file, "%s = %s\n", device_show_system_memory,
+            boolean_string(options->gpu_specific_opts[i].show_system_memory));
     bool draw_any = false;
     for (enum plot_information j = plot_gpu_rate; j < plot_information_count; ++j) {
       if (plot_isset_draw_info(j, options->gpu_specific_opts[i].to_draw)) {

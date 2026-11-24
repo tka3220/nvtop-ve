@@ -21,6 +21,7 @@
 
 #include "nvtop/interface_setup_win.h"
 #include "nvtop/interface.h"
+#include <string.h>
 #include "nvtop/interface_internal_common.h"
 #include "nvtop/interface_options.h"
 #include "nvtop/interface_ring_buffer.h"
@@ -57,35 +58,54 @@ enum setup_header_options {
   setup_header_toggle_fahrenheit,
   setup_header_enc_dec_timer,
   setup_header_gpu_info_bar,
+  setup_header_all_info_bar,
   setup_header_options_count
 };
 
+static const char *setup_header_system_memory_all_description =
+    "Show system RAM instead of device memory (shared-memory devices)";
+
 static const char *setup_header_option_descriptions[setup_header_options_count] = {
     "Temperature in fahrenheit", "Keep displaying Encoder/Decoder rate (after reaching an idle state)",
-    "Display extra GPU info bar"};
+    "Display dynamic GPU info (clock domains, NVLink errors)", "Display static GPU info and secondary clock domains"};
 
 // Chart Options
 
 enum setup_chart_options {
   setup_chart_reverse,
-  setup_chart_all_gpu,
+  // One color row per plot line position, shown even when unused by the
+  // current layout so every line color can be configured.
+  setup_chart_color_start,
+  setup_chart_all_gpu = setup_chart_color_start + MAX_LINES_PER_PLOT,
   setup_chart_start_gpu_list,
-  setup_chart_options_count
 };
 
-static const char *setup_chart_options_descriptions[setup_chart_options_count] = {
-    "Reverse plot direction", "Displayed all GPUs", "Displayed GPU"};
+static const char *setup_chart_reverse_description = "Reverse plot direction";
+static const char *setup_chart_all_gpu_description  = "Displayed all GPUs";
+static const char *setup_chart_gpu_description      = "Displayed GPU";
+static const char *setup_chart_system_memory_description = "Show system RAM instead of device memory";
 
 static const char *setup_chart_gpu_value_descriptions[plot_information_count] = {
-    "GPU utilization rate", "GPU memory utilization rate",   "GPU encoder rate", "GPU decoder rate",
-    "GPU temperature",      "Power draw rate (current/max)", "Fan speed",        "GPU clock rate",
-    "GPU memory clock rate", "Effective load rate"};
+    "%s utilization rate",  "%s memory utilization rate",    "%s encoder rate",   "%s decoder rate",
+    "%s temperature",       "Power draw rate (current/max)", "Fan speed",         "%s clock rate",
+    "%s memory clock rate", "Effective load rate",           "PCIe RX load rate", "PCIe TX load rate",
+    "HVX utilization rate", "HMX utilization rate"};
+
+// Formats the description of a plot metric for the given compute unit label.
+// Descriptions without a unit placeholder (power, fan, ...) are returned as-is.
+static void format_metric_description(char *buf, size_t buflen, enum plot_information info, const char *unit) {
+  snprintf(buf, buflen, setup_chart_gpu_value_descriptions[info], unit);
+}
+
+static const char *chart_color_names[] = {"Red", "Cyan", "Green", "Yellow", "Blue", "Magenta", "White"};
+static const unsigned chart_color_names_count = ARRAY_SIZE(chart_color_names);
 
 // Process List Options
 
 enum setup_proc_list_options {
   setup_proc_list_hide_process_list,
   setup_proc_list_hide_nvtop_process,
+  setup_proc_list_dynamic_memory_units,
   setup_proc_list_sort_ascending,
   setup_proc_list_sort_by,
   setup_proc_list_display,
@@ -93,7 +113,12 @@ enum setup_proc_list_options {
 };
 
 static const char *setup_proc_list_option_description[setup_proc_list_options_count] = {
-    "Don't display the process list", "Hide nvtop in the process list", "Sort Ascending", "Sort by", "Field Displayed"};
+    "Don't display the process list",
+    "Hide nvtop in the process list",
+    "Dynamic memory units",
+    "Sort Ascending",
+    "Sort by",
+    "Field Displayed"};
 
 static const char *setup_proc_list_value_descriptions[process_field_count] = {
     "Process Id",    "User name",        "Device Id", "Workload type",    "GPU usage", "Encoder usage",
@@ -111,6 +136,39 @@ enum option_state {
   option_on,
   option_partially_active,
 };
+
+// The devices sharing their memory with the host can show the system RAM
+// instead of the device memory derived from their processes. The Devices section
+// always offers to set it for every device; the Chart section of each device
+// sharing its memory offers it for that device.
+static unsigned shared_memory_device_count(const struct nvtop_interface *interface) {
+  unsigned count = 0;
+  for (unsigned i = 0; i < interface->monitored_dev_count; ++i)
+    count += interface->options.gpu_specific_opts[i].linkedGpu->static_info.memory_shared_with_host;
+  return count;
+}
+
+// Whether the Chart section of the gpu-th monitored device offers to show the
+// system RAM, after its metrics.
+static bool chart_gpu_offers_system_memory(const struct nvtop_interface *interface, unsigned gpu) {
+  return gpu < interface->monitored_dev_count &&
+         interface->options.gpu_specific_opts[gpu].linkedGpu->static_info.memory_shared_with_host;
+}
+
+// The state shown for all devices follows the monitored devices sharing their
+// memory with the host, or all devices when none does.
+static enum option_state shared_memory_all_state(const struct nvtop_interface *interface) {
+  unsigned shared_count = shared_memory_device_count(interface), count = 0, enabled = 0;
+  for (unsigned i = 0; i < interface->total_dev_count; ++i) {
+    const nvtop_interface_gpu_opts *gpu_opts = &interface->options.gpu_specific_opts[i];
+    bool shared = i < interface->monitored_dev_count && gpu_opts->linkedGpu->static_info.memory_shared_with_host;
+    if (shared_count && !shared)
+      continue;
+    count++;
+    enabled += gpu_opts->show_system_memory;
+  }
+  return enabled == 0 ? option_off : enabled == count ? option_on : option_partially_active;
+}
 
 static char option_state_char(enum option_state state) {
   switch (state) {
@@ -242,8 +300,10 @@ static void draw_setup_window_general(struct nvtop_interface *interface) {
 static void draw_setup_window_header(struct nvtop_interface *interface) {
   if (interface->setup_win.indentation_level > 1)
     interface->setup_win.indentation_level = 1;
-  if (interface->setup_win.options_selected[0] >= setup_header_options_count)
-    interface->setup_win.options_selected[0] = setup_header_options_count - 1;
+  bool has_shared_memory = shared_memory_device_count(interface) > 0;
+  unsigned last_option = has_shared_memory ? setup_header_options_count : setup_header_options_count - 1;
+  if (interface->setup_win.options_selected[0] > last_option)
+    interface->setup_win.options_selected[0] = last_option;
 
   WINDOW *options_win = interface->setup_win.single;
 
@@ -282,13 +342,33 @@ static void draw_setup_window_header(struct nvtop_interface *interface) {
     mvwchgat(options_win, setup_header_enc_dec_timer + 1, 0, 8, A_STANDOUT, cyan_color, NULL);
   }
 
-  // Extra GPU info bar
+  // Extra GPU info bar (dynamic parameters)
   option_state = interface->options.has_gpu_info_bar;
   mvwprintw(options_win, setup_header_gpu_info_bar + 1, 0, "[%c] %s", option_state_char(option_state),
             setup_header_option_descriptions[setup_header_gpu_info_bar]);
   if (interface->setup_win.indentation_level == 1 &&
       interface->setup_win.options_selected[0] == setup_header_gpu_info_bar) {
     mvwchgat(options_win, setup_header_gpu_info_bar + 1, 0, 3, A_STANDOUT, cyan_color, NULL);
+  }
+
+  // Static specs and secondary clock domains
+  option_state = interface->options.has_all_info_bar;
+  mvwprintw(options_win, setup_header_all_info_bar + 1, 0, "[%c] %s", option_state_char(option_state),
+            setup_header_option_descriptions[setup_header_all_info_bar]);
+  if (interface->setup_win.indentation_level == 1 &&
+      interface->setup_win.options_selected[0] == setup_header_all_info_bar) {
+    mvwchgat(options_win, setup_header_all_info_bar + 1, 0, 3, A_STANDOUT, cyan_color, NULL);
+  }
+
+  // System RAM instead of the device memory, for every device sharing it. The
+  // row is only meaningful, and only shown, when a monitored device shares
+  // its memory with the host.
+  if (has_shared_memory) {
+    mvwprintw(options_win, setup_header_options_count + 1, 0, "[%c] %s",
+              option_state_char(shared_memory_all_state(interface)), setup_header_system_memory_all_description);
+    if (interface->setup_win.indentation_level == 1 &&
+        interface->setup_win.options_selected[0] == setup_header_options_count)
+      mvwchgat(options_win, setup_header_options_count + 1, 0, 3, A_STANDOUT, cyan_color, NULL);
   }
   wnoutrefresh(options_win);
 }
@@ -297,22 +377,32 @@ static void draw_setup_window_chart(unsigned devices_count, struct list_head *de
                                     struct nvtop_interface *interface) {
   WINDOW *option_list_win;
 
-  // Fix indices for this window
-  if (interface->setup_win.options_selected[0] > devices_count + 1)
-    interface->setup_win.options_selected[0] = devices_count + 1;
-  if (interface->setup_win.options_selected[0] > 0) {
-    if (interface->setup_win.options_selected[1] >= plot_information_count)
-      interface->setup_win.options_selected[1] = plot_information_count - 1;
-    option_list_win = interface->setup_win.split[0];
-  } else {
+  // Clamp selected row
+  if (interface->setup_win.options_selected[0] > setup_chart_start_gpu_list + devices_count - 1)
+    interface->setup_win.options_selected[0] = setup_chart_start_gpu_list + devices_count - 1;
+
+  if (interface->setup_win.options_selected[0] < setup_chart_all_gpu) {
     if (interface->setup_win.indentation_level > 1)
       interface->setup_win.indentation_level = 1;
     option_list_win = interface->setup_win.single;
+  } else {
+    // A device sharing its memory with the host lists one more option after its metrics.
+    unsigned last_value = plot_information_count - 1;
+    if (interface->setup_win.options_selected[0] > setup_chart_all_gpu &&
+        chart_gpu_offers_system_memory(interface,
+                                       interface->setup_win.options_selected[0] - setup_chart_start_gpu_list))
+      last_value = plot_information_count;
+    if (interface->setup_win.options_selected[1] > last_value)
+      interface->setup_win.options_selected[1] = last_value;
+    option_list_win = interface->setup_win.split[0];
   }
+
   werase(interface->setup_win.single);
   wnoutrefresh(interface->setup_win.single);
-  touchwin(interface->setup_win.split[0]);
-  touchwin(interface->setup_win.split[1]);
+  werase(interface->setup_win.split[0]);
+  wnoutrefresh(interface->setup_win.split[0]);
+  werase(interface->setup_win.split[1]);
+  wnoutrefresh(interface->setup_win.split[1]);
 
   wattr_set(option_list_win, A_STANDOUT, green_color, NULL);
   mvwprintw(option_list_win, 0, 0, "Chart Options");
@@ -329,9 +419,28 @@ static void draw_setup_window_chart(unsigned devices_count, struct list_head *de
   // Reverse plot
   option_state = interface->options.plot_left_to_right;
   mvwprintw(option_list_win, setup_chart_reverse + 1, 0, "[%c] %s", option_state_char(option_state),
-            setup_chart_options_descriptions[setup_chart_reverse]);
-  if (interface->setup_win.indentation_level == 1 && interface->setup_win.options_selected[0] == setup_chart_reverse) {
+            setup_chart_reverse_description);
+  if (interface->setup_win.indentation_level == 1 &&
+      interface->setup_win.options_selected[0] == setup_chart_reverse) {
     mvwchgat(option_list_win, setup_chart_reverse + 1, 0, 3, A_STANDOUT, cyan_color, NULL);
+  }
+
+  // Colors apply to line positions within each plot. Different GPUs and
+  // merged plots can associate the same color slot with different metrics.
+  for (unsigned s = 0; s < MAX_LINES_PER_PLOT; ++s) {
+    unsigned row = setup_chart_color_start + s;
+    char color_row_buf[256];
+    snprintf(color_row_buf, sizeof(color_row_buf), "[%s] Plot line %u",
+             chart_color_names[interface->options.gpu_plot_color_idx[s]],
+             s + 1);
+    mvwprintw(option_list_win, row + 1, 0, "%.*s", maxcols, color_row_buf);
+
+    if (interface->setup_win.indentation_level == 1 &&
+        interface->setup_win.options_selected[0] == row) {
+      mvwchgat(option_list_win, row + 1, 0,
+               (int)strlen(chart_color_names[interface->options.gpu_plot_color_idx[s]]) + 2,
+               A_STANDOUT, cyan_color, NULL);
+    }
   }
 
   // Set for all GPUs at once
@@ -344,7 +453,7 @@ static void draw_setup_window_chart(unsigned devices_count, struct list_head *de
   mvwaddch(option_list_win, setup_chart_all_gpu + 1, 1, ACS_HLINE);
   waddch(option_list_win, '>');
   wstandend(option_list_win);
-  wprintw(option_list_win, " %s", setup_chart_options_descriptions[setup_chart_all_gpu]);
+  wprintw(option_list_win, " %s", setup_chart_all_gpu_description);
 
   // GPUs as a list
   for (unsigned i = 0; i < devices_count; ++i) {
@@ -357,12 +466,18 @@ static void draw_setup_window_chart(unsigned devices_count, struct list_head *de
     mvwaddch(option_list_win, setup_chart_start_gpu_list + 1 + i, 1, ACS_HLINE);
     waddch(option_list_win, '>');
     wstandend(option_list_win);
-    wprintw(option_list_win, " %s %u", setup_chart_options_descriptions[setup_chart_start_gpu_list], i);
+    wprintw(option_list_win, " %s %u", setup_chart_gpu_description, i);
   }
   wnoutrefresh(option_list_win);
 
   // Window of list of metric to display in chart (4 maximum)
   if (interface->setup_win.options_selected[0] >= setup_chart_all_gpu) {
+    struct gpu_info *first_device;
+    const char *unit = "GPU";
+    list_for_each_entry(first_device, devices, list) {
+      unit = DEVICE_UNIT_NAME(first_device);
+      break;
+    }
     WINDOW *value_list_win = interface->setup_win.split[1];
     wattr_set(value_list_win, A_STANDOUT, green_color, NULL);
     mvwprintw(value_list_win, 0, 0, "Metric Displayed in Graph");
@@ -371,7 +486,6 @@ static void draw_setup_window_chart(unsigned devices_count, struct list_head *de
     if (interface->setup_win.options_selected[0] == setup_chart_all_gpu) {
       wprintw(value_list_win, " (All GPUs)");
     } else {
-      // Get the selected device
       struct gpu_info *device;
       unsigned index = 0;
       list_for_each_entry(device, devices, list) {
@@ -379,11 +493,12 @@ static void draw_setup_window_chart(unsigned devices_count, struct list_head *de
           break;
         index++;
       }
+      unit = DEVICE_UNIT_NAME(device);
       if (IS_VALID(gpuinfo_device_name_valid, device->static_info.valid)) {
         getyx(value_list_win, tmp, cur_col);
         wprintw(value_list_win, " (%.*s)", maxcols - cur_col - 3, device->static_info.device_name);
       } else
-        wprintw(value_list_win, " (GPU %u)", selected_gpu);
+        wprintw(value_list_win, " (%s %u)", unit, selected_gpu);
     }
     wclrtoeol(value_list_win);
     getyx(value_list_win, tmp, cur_col);
@@ -410,11 +525,22 @@ static void draw_setup_window_chart(unsigned devices_count, struct list_head *de
       } else {
         option_state = plot_isset_draw_info(i, interface->options.gpu_specific_opts[selected_gpu].to_draw);
       }
-      mvwprintw(value_list_win, i + 2, 0, "[%c] %s", option_state_char(option_state),
-                setup_chart_gpu_value_descriptions[i]);
+      char description[64];
+      format_metric_description(description, sizeof(description), i, unit);
+      mvwprintw(value_list_win, i + 2, 0, "[%c] %s", option_state_char(option_state), description);
       if (interface->setup_win.indentation_level == 2 && interface->setup_win.options_selected[1] == i) {
         mvwchgat(value_list_win, i + 2, 0, 3, A_STANDOUT, cyan_color, NULL);
       }
+    }
+    if (interface->setup_win.options_selected[0] != setup_chart_all_gpu &&
+        chart_gpu_offers_system_memory(interface, selected_gpu)) {
+      unsigned row = plot_information_count + 2;
+      mvwprintw(value_list_win, row, 0, "[%c] %s",
+                option_state_char(interface->options.gpu_specific_opts[selected_gpu].show_system_memory),
+                setup_chart_system_memory_description);
+      if (interface->setup_win.indentation_level == 2 &&
+          interface->setup_win.options_selected[1] == plot_information_count)
+        mvwchgat(value_list_win, row, 0, 3, A_STANDOUT, cyan_color, NULL);
     }
     wnoutrefresh(value_list_win);
   }
@@ -474,6 +600,13 @@ static void draw_setup_window_proc_list(struct nvtop_interface *interface) {
   if (interface->setup_win.indentation_level == 1 &&
       interface->setup_win.options_selected[0] == setup_proc_list_hide_nvtop_process) {
     mvwchgat(option_list_win, setup_proc_list_hide_nvtop_process + 1, 0, 3, A_STANDOUT, cyan_color, NULL);
+  }
+  option_state = interface->options.dynamic_memory_units;
+  mvwprintw(option_list_win, setup_proc_list_dynamic_memory_units + 1, 0, "[%c] %s", option_state_char(option_state),
+            setup_proc_list_option_description[setup_proc_list_dynamic_memory_units]);
+  if (interface->setup_win.indentation_level == 1 &&
+      interface->setup_win.options_selected[0] == setup_proc_list_dynamic_memory_units) {
+    mvwchgat(option_list_win, setup_proc_list_dynamic_memory_units + 1, 0, 3, A_STANDOUT, cyan_color, NULL);
   }
   option_state = !interface->options.sort_descending_order;
   mvwprintw(option_list_win, setup_proc_list_sort_ascending + 1, 0, "[%c] %s", option_state_char(option_state),
@@ -753,6 +886,20 @@ void handle_setup_win_keypress(int keyId, struct nvtop_interface *interface) {
           if (interface->setup_win.options_selected[0] == setup_header_gpu_info_bar) {
             interface->options.has_gpu_info_bar = !interface->options.has_gpu_info_bar;
           }
+          if (interface->setup_win.options_selected[0] == setup_header_all_info_bar) {
+            interface->options.has_all_info_bar = !interface->options.has_all_info_bar;
+          }
+          if (shared_memory_device_count(interface) > 0 &&
+              interface->setup_win.options_selected[0] == setup_header_options_count) {
+            // Set it for every monitored device sharing its memory with the
+            // host, unless all of them already have it.
+            bool enable = shared_memory_all_state(interface) != option_on;
+            for (unsigned i = 0; i < interface->monitored_dev_count; ++i) {
+              nvtop_interface_gpu_opts *gpu_opts = &interface->options.gpu_specific_opts[i];
+              if (gpu_opts->linkedGpu->static_info.memory_shared_with_host)
+                gpu_opts->show_system_memory = enable;
+            }
+          }
         }
       }
       // Chart Options
@@ -760,6 +907,14 @@ void handle_setup_win_keypress(int keyId, struct nvtop_interface *interface) {
         if (interface->setup_win.indentation_level == 1) {
           if (interface->setup_win.options_selected[0] == setup_chart_reverse) {
             interface->options.plot_left_to_right = !interface->options.plot_left_to_right;
+          }
+          // Color rows
+          unsigned sel = interface->setup_win.options_selected[0];
+          if (sel >= setup_chart_color_start && sel < setup_chart_all_gpu) {
+            unsigned slot = sel - setup_chart_color_start;
+            interface->options.gpu_plot_color_idx[slot] =
+                (interface->options.gpu_plot_color_idx[slot] + 1) % chart_color_names_count;
+            apply_plot_colors(interface->options.gpu_plot_color_idx);
           }
           if (interface->setup_win.options_selected[0] >= setup_chart_all_gpu) {
             handle_setup_win_keypress(KEY_RIGHT, interface);
@@ -784,7 +939,14 @@ void handle_setup_win_keypress(int keyId, struct nvtop_interface *interface) {
               }
             }
           }
-          if (interface->setup_win.options_selected[0] > setup_chart_all_gpu) {
+          if (interface->setup_win.options_selected[0] > setup_chart_all_gpu &&
+              interface->setup_win.options_selected[1] == plot_information_count) {
+            // The option listed after the metrics of a device sharing its memory
+            nvtop_interface_gpu_opts *gpu_opts =
+                &interface->options.gpu_specific_opts[interface->setup_win.options_selected[0] -
+                                                      setup_chart_start_gpu_list];
+            gpu_opts->show_system_memory = !gpu_opts->show_system_memory;
+          } else if (interface->setup_win.options_selected[0] > setup_chart_all_gpu) {
             unsigned selected_gpu = interface->setup_win.options_selected[0] - setup_chart_start_gpu_list;
             if (plot_isset_draw_info(interface->setup_win.options_selected[1],
                                      interface->options.gpu_specific_opts[selected_gpu].to_draw))
@@ -806,6 +968,8 @@ void handle_setup_win_keypress(int keyId, struct nvtop_interface *interface) {
             interface->options.filter_nvtop_pid = !interface->options.filter_nvtop_pid;
           } else if (interface->setup_win.options_selected[0] == setup_proc_list_hide_process_list) {
             interface->options.hide_processes_list = !interface->options.hide_processes_list;
+          } else if (interface->setup_win.options_selected[0] == setup_proc_list_dynamic_memory_units) {
+            interface->options.dynamic_memory_units = !interface->options.dynamic_memory_units;
           } else if (interface->setup_win.options_selected[0] == setup_proc_list_sort_by) {
             handle_setup_win_keypress(KEY_RIGHT, interface);
           }
