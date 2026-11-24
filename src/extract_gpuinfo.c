@@ -129,7 +129,9 @@ bool gpuinfo_fix_dynamic_info_from_process_info(struct list_head *devices) {
     // If the global GPU usage is not available, try computing it from the processes info
     // Some integrated AMDGPU report 100% usage while process usage is actually low
 
-    bool needGpuRate = true;
+    // A vendor with its own label (VE) reports device utilisation itself. Its per-process
+    // figure uses that vendor's scale (ve-top: one core = 100) and must not replace the device rate.
+    bool needGpuRate = !(device->vendor && device->vendor->device_label);
     bool validReportedGpuRate = GPUINFO_DYNAMIC_FIELD_VALID(dynamic_info, gpu_util_rate);
     unsigned reportedGpuRate = dynamic_info->gpu_util_rate;
     RESET_GPUINFO_DYNAMIC(dynamic_info, gpu_util_rate);
@@ -223,10 +225,11 @@ static void gpuinfo_populate_process_info(struct gpu_info *device) {
       HASH_ADD_PID(updated_process_info, cached_pid_info);
     }
 
-    if (cached_pid_info->cmdline) {
+    // Keep a name the vendor already supplied (VE reports the program name from ve-top).
+    if (cached_pid_info->cmdline && !GPUINFO_PROCESS_FIELD_VALID(&device->processes[j], cmdline)) {
       SET_GPUINFO_PROCESS(&device->processes[j], cmdline, cached_pid_info->cmdline);
     }
-    if (cached_pid_info->user_name) {
+    if (cached_pid_info->user_name && !GPUINFO_PROCESS_FIELD_VALID(&device->processes[j], user_name)) {
       SET_GPUINFO_PROCESS(&device->processes[j], user_name, cached_pid_info->user_name);
     }
 

@@ -208,6 +208,8 @@ struct gpu_vendor {
 
   void (*refresh_running_processes)(struct gpu_info *gpu_info);
   char *name;
+  // Short label used for meters and plot legends (e.g. "VE"). NULL means "GPU".
+  const char *device_label;
 };
 
 #define PDEV_LEN 16

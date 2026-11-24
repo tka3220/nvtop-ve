@@ -54,6 +54,11 @@ if(NVIDIA_SUPPORT)
   target_sources(nvtop PRIVATE extract_gpuinfo_nvidia.c)
 endif()
 
+option(VE_SUPPORT "Build support for NEC SX-Aurora TSUBASA Vector Engines through /sys/class/ve, vecmd and ve-mpstat" ON)
+if(VE_SUPPORT AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  target_sources(nvtop PRIVATE extract_gpuinfo_ve.c)
+endif()
+
 if(ASCEND_SUPPORT)
   target_sources(nvtop PRIVATE extract_gpuinfo_ascend.c)
   set(DCMI_LIBRARY_PATH /usr/local/Ascend/driver/lib64/driver)

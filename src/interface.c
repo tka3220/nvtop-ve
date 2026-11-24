@@ -32,6 +32,7 @@
 #include "nvtop/time.h"
 
 #include <assert.h>
+#include <ctype.h>
 #include <inttypes.h>
 #include <ncurses.h>
 #include <signal.h>
@@ -49,7 +50,7 @@ static unsigned int sizeof_device_field[device_field_count] = {
 };
 
 static unsigned int sizeof_process_field[process_field_count] = {
-    [process_pid] = 7,       [process_user] = 4,          [process_gpu_id] = 3,   [process_type] = 8,
+    [process_pid] = 7,       [process_user] = 4,          [process_gpu_id] = 4,   [process_type] = 8,
     [process_gpu_rate] = 4,  [process_enc_rate] = 4,      [process_dec_rate] = 4,
     [process_memory] = 14, // 9 for mem 5 for %
     [process_cpu_usage] = 6, [process_cpu_mem_usage] = 9, [process_command] = 0,
@@ -640,6 +641,25 @@ static void encode_decode_show_select(struct device_window *dev, bool encode_val
   }
 }
 
+// Short label of a device for meters and plot legends: the vendor's device_label, or "GPU"
+static const char *device_label(const struct gpu_info *device) {
+  if (device && device->vendor && device->vendor->device_label)
+    return device->vendor->device_label;
+  return "GPU";
+}
+
+// Vendors with their own label carry the official number in pdev ("VE0"). Others use the list index.
+static unsigned device_shown_id(const struct gpu_info *device, unsigned fallback) {
+  if (!device || !device->vendor || !device->vendor->device_label)
+    return fallback;
+  const char *p = device->pdev;
+  while (*p && !isdigit((unsigned char)*p))
+    p++;
+  if (!*p)
+    return fallback;
+  return (unsigned)strtoul(p, NULL, 10);
+}
+
 static void draw_devices(struct list_head *devices, struct nvtop_interface *interface) {
   struct gpu_info *device;
   unsigned dev_id = 0;
@@ -648,7 +668,10 @@ static void draw_devices(struct list_head *devices, struct nvtop_interface *inte
     struct device_window *dev = &interface->devices_win[dev_id];
 
     wcolor_set(dev->name_win, cyan_color, NULL);
-    mvwprintw(dev->name_win, 0, 0, "Device %-2u", dev_id);
+    if (device->vendor && device->vendor->device_label)
+      mvwprintw(dev->name_win, 0, 0, "%s %-2u", device->vendor->device_label, device_shown_id(device, dev_id));
+    else
+      mvwprintw(dev->name_win, 0, 0, "Device %-2u", dev_id);
     wstandend(dev->name_win);
     if (GPUINFO_STATIC_FIELD_VALID(&device->static_info, device_name)) {
       wprintw(dev->name_win, "[%s]", device->static_info.device_name);
@@ -705,15 +728,16 @@ static void draw_devices(struct list_head *devices, struct nvtop_interface *inte
       if (GPUINFO_DYNAMIC_FIELD_VALID(&device->dynamic_info, effective_load_rate)) {
         snprintf(buff, 1024, "%u%%(eff %u%%)", device->dynamic_info.gpu_util_rate,
                  device->dynamic_info.effective_load_rate);
-        draw_percentage_meter_with_yellow_highlight(gpu_util_win, "GPU", device->dynamic_info.gpu_util_rate,
+        draw_percentage_meter_with_yellow_highlight(gpu_util_win, device_label(device),
+                                                    device->dynamic_info.gpu_util_rate,
                                                     device->dynamic_info.effective_load_rate, buff);
       } else {
         snprintf(buff, 1024, "%u%%", device->dynamic_info.gpu_util_rate);
-        draw_percentage_meter(gpu_util_win, "GPU", device->dynamic_info.gpu_util_rate, buff);
+        draw_percentage_meter(gpu_util_win, device_label(device), device->dynamic_info.gpu_util_rate, buff);
       }
     } else {
       snprintf(buff, 1024, "N/A");
-      draw_percentage_meter(gpu_util_win, "GPU", 0, buff);
+      draw_percentage_meter(gpu_util_win, device_label(device), 0, buff);
     }
 
     if (GPUINFO_DYNAMIC_FIELD_VALID(&device->dynamic_info, total_memory) &&
@@ -780,9 +804,9 @@ static void draw_devices(struct list_head *devices, struct nvtop_interface *inte
     // GPU CLOCK
     werase(dev->gpu_clock_info);
     if (GPUINFO_DYNAMIC_FIELD_VALID(&device->dynamic_info, gpu_clock_speed))
-      mvwprintw(dev->gpu_clock_info, 0, 0, "GPU %uMHz", device->dynamic_info.gpu_clock_speed);
+      mvwprintw(dev->gpu_clock_info, 0, 0, "%s %uMHz", device_label(device), device->dynamic_info.gpu_clock_speed);
     else
-      mvwprintw(dev->gpu_clock_info, 0, 0, "GPU N/A MHz");
+      mvwprintw(dev->gpu_clock_info, 0, 0, "%s N/A MHz", device_label(device));
 
     mvwchgat(dev->gpu_clock_info, 0, 0, 3, 0, cyan_color, NULL);
     wnoutrefresh(dev->gpu_clock_info);
@@ -894,6 +918,7 @@ typedef struct {
   unsigned processes_count;
   struct gpuid_and_process {
     unsigned gpu_id;
+    struct gpu_info *device;
     struct gpu_process *process;
   } *processes;
 } all_processes;
@@ -921,6 +946,7 @@ static all_processes all_processes_array(struct list_head *devices) {
   list_for_each_entry(device, devices, list) {
     for (unsigned int j = 0; j < device->processes_count; ++j) {
       merged_devices_processes.processes[offset].gpu_id = dev_id;
+      merged_devices_processes.processes[offset].device = device;
       merged_devices_processes.processes[offset++].process = &device->processes[j];
     }
 
@@ -1268,9 +1294,13 @@ static void print_processes_on_screen(all_processes all_procs, struct process_wi
     }
 
     if (process_is_field_displayed(process_gpu_id, fields_to_display)) {
-      size_t size = snprintf(guid_str, sizeof_process_field[process_gpu_id] + 1, "%u", processes[i].gpu_id);
+      size_t size;
+      if (processes[i].device && processes[i].device->vendor && processes[i].device->vendor->device_label)
+        size = snprintf(guid_str, sizeof_process_field[process_gpu_id] + 1, "%s", processes[i].device->pdev);
+      else
+        size = snprintf(guid_str, sizeof_process_field[process_gpu_id] + 1, "%u", processes[i].gpu_id);
       if (size >= sizeof_process_field[process_gpu_id] + 1)
-        pid_str[sizeof_process_field[process_gpu_id]] = '\0';
+        guid_str[sizeof_process_field[process_gpu_id]] = '\0';
       printed += snprintf(&process_print_buffer[printed], process_buffer_line_size - printed, "%*s ",
                           sizeof_process_field[process_gpu_id], guid_str);
     }
@@ -1753,40 +1783,43 @@ static unsigned populate_plot_data_from_ring_buffer(const struct nvtop_interface
   for (unsigned i = 0; i < plot_win->num_devices_to_plot; ++i) {
     unsigned dev_id = plot_win->devices_ids[i];
     plot_info_to_draw to_draw = interface->options.gpu_specific_opts[dev_id].to_draw;
+    const struct gpu_info *linked = interface->options.gpu_specific_opts[dev_id].linkedGpu;
+    const char *label = device_label(linked);
+    unsigned shown_id = device_shown_id(linked, dev_id);
     unsigned data_ring_index = 0;
     for (enum plot_information info = plot_gpu_rate; info < plot_information_count; ++info) {
       if (plot_isset_draw_info(info, to_draw)) {
         // Populate the legend
         switch (info) {
         case plot_gpu_rate:
-          snprintf(plot_legend[in_processing], PLOT_MAX_LEGEND_SIZE, "GPU%u %%", dev_id);
+          snprintf(plot_legend[in_processing], PLOT_MAX_LEGEND_SIZE, "%s%u %%", label, shown_id);
           break;
         case plot_gpu_mem_rate:
-          snprintf(plot_legend[in_processing], PLOT_MAX_LEGEND_SIZE, "GPU%u mem%%", dev_id);
+          snprintf(plot_legend[in_processing], PLOT_MAX_LEGEND_SIZE, "%s%u mem%%", label, shown_id);
           break;
         case plot_encoder_rate:
-          snprintf(plot_legend[in_processing], PLOT_MAX_LEGEND_SIZE, "GPU%u encode%%", dev_id);
+          snprintf(plot_legend[in_processing], PLOT_MAX_LEGEND_SIZE, "%s%u encode%%", label, shown_id);
           break;
         case plot_decoder_rate:
-          snprintf(plot_legend[in_processing], PLOT_MAX_LEGEND_SIZE, "GPU%u decode%%", dev_id);
+          snprintf(plot_legend[in_processing], PLOT_MAX_LEGEND_SIZE, "%s%u decode%%", label, shown_id);
           break;
         case plot_gpu_temperature:
-          snprintf(plot_legend[in_processing], PLOT_MAX_LEGEND_SIZE, "GPU%u temp(c)", dev_id);
+          snprintf(plot_legend[in_processing], PLOT_MAX_LEGEND_SIZE, "%s%u temp(c)", label, shown_id);
           break;
         case plot_gpu_power_draw_rate:
-          snprintf(plot_legend[in_processing], PLOT_MAX_LEGEND_SIZE, "GPU%u power%%", dev_id);
+          snprintf(plot_legend[in_processing], PLOT_MAX_LEGEND_SIZE, "%s%u power%%", label, shown_id);
           break;
         case plot_fan_speed:
-          snprintf(plot_legend[in_processing], PLOT_MAX_LEGEND_SIZE, "GPU%u fan%%", dev_id);
+          snprintf(plot_legend[in_processing], PLOT_MAX_LEGEND_SIZE, "%s%u fan%%", label, shown_id);
           break;
         case plot_gpu_clock_rate:
-          snprintf(plot_legend[in_processing], PLOT_MAX_LEGEND_SIZE, "GPU%u clock%%", dev_id);
+          snprintf(plot_legend[in_processing], PLOT_MAX_LEGEND_SIZE, "%s%u clock%%", label, shown_id);
           break;
         case plot_gpu_mem_clock_rate:
-          snprintf(plot_legend[in_processing], PLOT_MAX_LEGEND_SIZE, "GPU%u mem clock%%", dev_id);
+          snprintf(plot_legend[in_processing], PLOT_MAX_LEGEND_SIZE, "%s%u mem clock%%", label, shown_id);
           break;
         case plot_effective_load_rate:
-          snprintf(plot_legend[in_processing], PLOT_MAX_LEGEND_SIZE, "GPU%u eff. load%%", dev_id);
+          snprintf(plot_legend[in_processing], PLOT_MAX_LEGEND_SIZE, "%s%u eff. load%%", label, shown_id);
           break;
         case plot_information_count:
           break;
