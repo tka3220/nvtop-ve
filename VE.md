@@ -41,6 +41,10 @@ reported. The VE tools, the NEC operation guide and `/sys/class/ve` do not expos
 - The process usage is the `%CPU` from `ve-top`: 100 % is one fully used core. The device utilization is the average
   over all cores, so the two scales differ.
 - The `PID` of a process is the PID of the `ve_exec` process on the host.
+- `F9` sends the signal to that host PID. Choosing `15 SIGTERM` for a VE process of the same user ended the VE job
+  (tested with a busy loop on VE 0). NVTOP does not check the result of `kill()`, so a signal that the kernel refuses,
+  for example to a process of another user, fails without a message. The refusal itself was checked with a host
+  process of another user, not with another user's VE job.
 - `ve-mpstat` and `ve-top` select the VE with the environment variable `VE_NODE_NUMBER`. The `-N` option did not select
   VE 1 in the tested environment. This variable is not described in NEC's guide.
 - The fan percentage uses RPM divided by the rated maximum. The PWM duty of the fan controller is not available.
