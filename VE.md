@@ -42,9 +42,9 @@ reported. The VE tools, the NEC operation guide and `/sys/class/ve` do not expos
   over all cores, so the two scales differ.
 - The `PID` of a process is the PID of the `ve_exec` process on the host.
 - `F9` sends the signal to that host PID. Choosing `15 SIGTERM` for a VE process of the same user ended the VE job
-  (tested with a busy loop on VE 0). NVTOP does not check the result of `kill()`, so a signal that the kernel refuses,
-  for example to a process of another user, fails without a message. The refusal itself was checked with a host
-  process of another user, not with another user's VE job.
+  (tested with a busy loop on VE 0). The processes of other users are listed too, but sending a signal to them fails
+  without a message: NVTOP does not check the result of `kill()` and the kernel refuses it (`EPERM`). Tested with a
+  busy loop started as another user on VE 0, which kept running after `SIGTERM` was sent from NVTOP.
 - `ve-mpstat` and `ve-top` select the VE with the environment variable `VE_NODE_NUMBER`. The `-N` option did not select
   VE 1 in the tested environment. This variable is not described in NEC's guide.
 - The fan percentage uses RPM divided by the rated maximum. The PWM duty of the fan controller is not available.
