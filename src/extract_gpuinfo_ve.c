@@ -65,6 +65,8 @@ struct ve_node_sample {
   bool pcie_gen_valid;
   bool pcie_width_valid;
   bool power_valid;
+  bool type_valid;
+  char type[16]; // VE type from "VE Type", e.g. "10C"
   unsigned temp_max; // degC, maximum over the "Chip Core" sensors
   unsigned fan_rpm;
   unsigned core_clock_mhz;
@@ -102,7 +104,7 @@ struct gpu_vendor gpu_vendor_ve = {
     .refresh_utilisation_rate = gpuinfo_ve_refresh_utilisation_rate,
     .refresh_running_processes = gpuinfo_ve_refresh_running_processes,
     .name = "VE",
-    .device_label = "VE",
+    .processing_unit = gpu_processing_unit_ve,
 };
 
 __attribute__((constructor)) static void init_extract_gpuinfo_ve(void) { register_gpu_vendor(&gpu_vendor_ve); }
@@ -151,6 +153,19 @@ static void ve_vecmd_parse(FILE *fp) {
     label[llen] = '\0';
 
     struct ve_node_sample *s = &vecmd_samples[cur];
+    if (strcmp(label, "VE Type") == 0) {
+      // Value is text, e.g. "10C"
+      const char *t = colon + 1;
+      while (*t && isspace((unsigned char)*t))
+        t++;
+      size_t tl = strcspn(t, " \t\r\n");
+      if (tl > 0 && tl < sizeof(s->type)) {
+        memcpy(s->type, t, tl);
+        s->type[tl] = '\0';
+        s->type_valid = true;
+      }
+      continue;
+    }
     if (strcmp(label, "Negotiated Link Width") == 0) {
       // Value is written as "x16"
       const char *w = colon + 1;
@@ -575,7 +590,12 @@ void gpuinfo_ve_populate_static_info(struct gpu_info *_gpu_info) {
   static_info->integrated_graphics = false;
   static_info->encode_decode_shared = false;
   RESET_ALL(static_info->valid);
-  snprintf(static_info->device_name, MAX_DEVICE_NAME, "NEC SX-Aurora VE%u", dev->node);
+  ve_vecmd_refresh();
+  const struct ve_node_sample *s = dev->node < VE_MAX_NODES ? &vecmd_samples[dev->node] : NULL;
+  if (s && s->type_valid)
+    snprintf(static_info->device_name, MAX_DEVICE_NAME, "NEC SX-Aurora TSUBASA Type %s", s->type);
+  else
+    snprintf(static_info->device_name, MAX_DEVICE_NAME, "NEC SX-Aurora VE%u", dev->node);
   SET_VALID(gpuinfo_device_name_valid, static_info->valid);
 }
 
