@@ -1,6 +1,15 @@
 NVTOP
 =====
 
+> **This is a fork of [Syllo/nvtop](https://github.com/Syllo/nvtop) (3.3.2) that adds
+> NEC SX-Aurora TSUBASA Vector Engine (VE) support.**
+> VE devices are shown as `VE 0`, `VE 1`, ... See
+> [NEC SX-Aurora TSUBASA Vector Engine (VE)](#nec-sx-aurora-tsubasa-vector-engine-ve) for the
+> requirements, what is shown and the known limitations. The VE backend has not been submitted
+> upstream; the full difference from upstream is
+> [here](https://github.com/Syllo/nvtop/compare/3.3.2...tka3220:ve-support).
+> This fork is not affiliated with NEC.
+
 What is NVTOP?
 --------------
 
@@ -11,7 +20,8 @@ htop-familiar way.
 Currently supported vendors are AMD (Linux amdgpu driver), Apple (limited M1 &
 M2 support), Huawei (Ascend), Intel (Linux i915/Xe drivers), NVIDIA (Linux
 proprietary divers), Qualcomm Adreno (Linux MSM driver), Broadcom VideoCore (Linux v3d driver),
-Rockchip, MetaX (MXSML driver), Enflame (Linux EFML driver).
+Rockchip, MetaX (MXSML driver), Enflame (Linux EFML driver), and, in this fork only,
+NEC SX-Aurora TSUBASA Vector Engine (VEOS tools).
 
 Because a picture is worth a thousand words:
 
@@ -35,6 +45,7 @@ Table of Contents
   - [Rockchip](#rockchip)
   - [MetaX](#metax)
   - [Enflame](#enflame)
+  - [NEC SX-Aurora TSUBASA Vector Engine (VE)](#nec-sx-aurora-tsubasa-vector-engine-ve) (this fork only)
 - [Build](#build)
 - [Distribution Specific Installation Process](#distribution-specific-installation-process)
   - [Ubuntu / Debian](#ubuntu--debian)
@@ -159,6 +170,59 @@ For more information about GPUs please take a look at the [METAX documentation](
 NVTOP supports Enflame GCUs (testing on Enflame S60, Enflame L300 and Enflame L600) by EFML LIBRARY
 
 GCU, which refers to General Compute Unit, is a type of accelerator card that is used to perform general-purpose computing tasks just like GPGPU.
+
+### NEC SX-Aurora TSUBASA Vector Engine (VE)
+
+*This section only applies to this fork.*
+
+NVTOP lists every Vector Engine found in `/sys/class/ve`. A VE is shown as `VE 0`, `VE 1`, ...
+(the VE node numbers used by VEOS, not NVTOP's position in the device list) and is labelled
+`VE` instead of `GPU` in the meters, the plot legends and the `DEV` column of the process list.
+Nothing on the VE or on the host is changed; every data source is read-only.
+
+**Requirements.** The NEC VEOS packages must be installed. The backend runs these tools from
+`/opt/nec/ve/bin` and needs no additional library at build time:
+
+| Tool | Used for |
+|---|---|
+| `vecmd info` | clocks, temperature, fan, 12 V voltage / current, memory size, PCIe link |
+| `ve-mpstat` | device utilisation |
+| `ve-top` | memory in use, process list |
+
+The backend is built on Linux by default; use `-DVE_SUPPORT=OFF` to disable it. Without
+`/sys/class/ve` no VE device is shown.
+
+**What is shown.**
+
+| NVTOP item | Value for a VE |
+|---|---|
+| Clock (`GPU`, `MEM`) | `Core Clock` / `Memory Clock` (the maximum shown is the same value) |
+| Utilisation | average over all cores (`ve-mpstat`, one busy core of eight is 12.5 %) |
+| Temperature | highest `Chip Core` temperature |
+| Fan | RPM, and a percentage computed as RPM / 10600 (the rated maximum from NEC's `ve_hw_spec.yaml`), which is not the PWM duty |
+| Power | AUX 12 V and Edge 12 V rails, voltage x current |
+| Memory | total from `Memory Size`, used from `ve-top` |
+| PCIe | current link generation and width |
+| Processes | all VE processes known to VEOS (`ve-top`), with user, command line, `%CPU` as usage and `RES` as memory |
+
+**Not shown** because the VE tools, the NEC operation guide and `/sys/class/ve` do not expose
+the data: power limit, temperature thresholds, memory utilisation, PCIe RX/TX throughput and
+encoder / decoder utilisation.
+
+**Notes.**
+
+* The usage of a process is the `%CPU` of `ve-top`: 100 % is one fully used core. The device
+  utilisation is the average over all cores, so the two scales differ.
+* The `PID` in the process list is the PID of the `ve_exec` process on the host. Sending a signal
+  with `F9` therefore acts on the VE job of that process.
+* `ve-mpstat` and `ve-top` select the VE with the environment variable `VE_NODE_NUMBER`
+  (the `-N` option did not select VE 1 in the tested environment). This is not described in
+  NEC's guide.
+* Tested on two VE Type 10C cards (VE driver 3.6.1, VMCFW 1.5.18, `vecmd` 1.3.92) on a
+  RHEL 8 compatible host. Other VE models and VEOS versions are untested.
+
+Build and install this fork like NVTOP (see [NVTOP Build](#nvtop-build)), cloning
+`https://github.com/tka3220/nvtop-ve.git` instead of the upstream repository.
 
 Build
 -----
